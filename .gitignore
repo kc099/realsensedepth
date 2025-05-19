@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+*.pth
+
+# RealSense specific folders to ignore
+calibration_images/
+Final/captured_frames/
+captures/
+screenshots/
+wheel_measurements/
+Final/maskrcnn_wheel_best.pth
+
+# JSON calibration files
+intrinsics_*.json
+
+# Local configuration
+.env
+.vscode/

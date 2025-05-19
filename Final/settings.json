@@ -1,0 +1,52 @@
+{
+    "settings": {
+        "selected_model": "10-13",
+        "auto_capture_interval": 5,
+        "calibration": {
+            "ref_diameter": 466.0,
+            "ref_diameter_pixels": 632.62,
+            "base_height": 1075.0,
+            "side_camera_height": 800.0,
+            "side_ref_pixels": 500.0,
+            "wheel_height": 75.0,
+            "fx": 640.268494,
+            "fy": 640.268494,
+            "cx": 642.991272,
+            "cy": 364.30368,
+            "depth_scale": 0.001,
+            "depth_units": 1000.0,
+            "depth_min": 200.0,
+            "depth_max": 3000.0
+        },
+        "top_camera_url": "tcp://192.168.100.50:8080",
+        "side_camera_url": "realsense://",
+        "capture_interval": 5
+    },
+    "wheel_models": {
+        "10-13": {
+            "min_dia": 10,
+            "max_dia": 13,
+            "height": 70,
+            "tolerance": 3.0
+        },
+        "13-16": {
+            "min_dia": 13,
+            "max_dia": 16,
+            "height": 75,
+            "tolerance": 3.0
+        },
+        "16-19": {
+            "min_dia": 16,
+            "max_dia": 19,
+            "height": 77,
+            "tolerance": 3.0
+        },
+        "19-22": {
+            "min_dia": 19,
+            "max_dia": 22,
+            "height": 115,
+            "tolerance": 3.0
+        }
+    },
+    "last_updated": "2025-05-19 10:17:36"
+}

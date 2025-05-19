@@ -1,0 +1,46 @@
+# Wheel Measurement System Modularization Plan
+
+## New Module Structure
+
+1. wheel_main.py
+   - Main entry point
+   - GUI setup and tkinter components
+   - Event handling
+
+2. camera_streams.py
+   - RealSense camera streaming
+   - Top camera streaming (event camera)
+   - Side camera streaming (if not RealSense)
+   - Camera initialization and cleanup
+
+3. image_processing.py
+   - Image detection and measurement algorithms
+   - Wheel dimension calculations
+   - Mask generation and processing
+
+4. wheel_measurements.py
+   - Calculation of real-world dimensions
+   - Height/diameter measurements
+   - Wheel classification
+
+5. settings_manager.py
+   - Settings loading/saving
+   - Model parameters
+
+6. utils.py
+   - Shared utility functions
+   - Image manipulation helpers
+   - UI update helpers
+
+7. database.py (already exists)
+   - Database operations
+   
+8. signal_handler.py
+   - 24V signal detection
+   - Signal processing
+
+9. reports_window.py (already exists)
+   - Reporting interface
+   
+10. settings_window.py (already exists)
+    - Settings interface
