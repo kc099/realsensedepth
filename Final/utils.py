@@ -39,11 +39,35 @@ def update_display(panel, frame, width, height):
         if len(frame.shape) == 2:  # Grayscale
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         
-        # Resize for display
-        frame = resize_with_aspect_ratio(frame, width=width, height=height)
+        # Calculate target size while maintaining aspect ratio
+        frame_h, frame_w = frame.shape[:2]
+        
+        # Calculate scale factors for width and height
+        scale_w = width / frame_w
+        scale_h = height / frame_h
+        
+        # Use the smaller scale to ensure the image fits
+        scale = min(scale_w, scale_h)
+        
+        # Calculate new dimensions
+        new_w = int(frame_w * scale)
+        new_h = int(frame_h * scale)
+        
+        # Resize the image
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # Create a canvas with the exact target size (filled with gray)
+        canvas = np.ones((height, width, 3), dtype=np.uint8) * 240  # light gray background
+        
+        # Calculate position to center the image
+        y_offset = (height - new_h) // 2
+        x_offset = (width - new_w) // 2
+        
+        # Place the resized image onto the canvas
+        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
         
         # Convert to PIL format and then to ImageTk
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(image)
         imgtk = ImageTk.PhotoImage(image=image)
         

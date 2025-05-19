@@ -54,10 +54,11 @@ photo_count = 0
 settings_win = None
 reports_win = None
 
-# Camera objects
-realsense_camera = None
-top_camera = None
-side_camera = None
+# Global variables for camera objects
+realsense_camera = None  # RealSense D435 camera for side view (depth)
+top_camera = None        # IP camera for top view
+side_camera = None       # This refers to the realsense_camera (for clarity)
+signal_handler = None  # Will be initialized at startup
 
 # Frame storage
 frame_top = None
@@ -257,7 +258,7 @@ def update_result_frame():
 
 def start_streaming():
     """Start streaming from cameras"""
-    global streaming_active, realsense_camera, top_camera, stop_streaming
+    global streaming_active, realsense_camera, top_camera, stop_streaming, signal_handler
     
     if streaming_active:
         status_label_main.config(text="Streaming already active")
@@ -289,9 +290,8 @@ def start_streaming():
     # Start frame update threads
     threading.Thread(target=update_frames, daemon=True).start()
     
-    # Start signal detection for 24V signal
-    signal_handler = SignalHandler(signal_callback=take_photo)
-    signal_handler.start_detection()
+    # Note: Signal handler is now started at application launch, not here
+    # This ensures modbus frames are detected even when streaming is not active
     
     status_label_main.config(text="Streaming started")
 
@@ -303,17 +303,17 @@ def update_frames():
         # Get frames from cameras
         if realsense_camera and realsense_camera.is_streaming:
             frame_side = realsense_camera.get_frame()
-            update_display(side_camera_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            update_display(side_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
         
         if top_camera and top_camera.is_streaming:
             frame_top = top_camera.get_frame()
-            update_display(top_camera_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            update_display(top_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
         
         time.sleep(0.03)  # ~30 FPS
 
 def stop_streaming_func():
     """Stop streaming from cameras"""
-    global streaming_active, stop_streaming, realsense_camera, top_camera
+    global streaming_active, stop_streaming, realsense_camera, top_camera, signal_handler
     
     stop_streaming = True
     streaming_active = False
@@ -334,6 +334,9 @@ def stop_streaming_func():
     auto_photo_button.config(state=tk.DISABLED)
     
     status_label_main.config(text="Streaming stopped")
+    
+    # Note: We don't stop the signal_handler as it needs to run continuously
+    # to detect 24V signals even when streaming is stopped
 
 def auto_capture():
     """Toggle automatic photo capture"""
@@ -421,9 +424,11 @@ def update_model_parameters():
     top_cam_height_var.set(f"{top_cam_height:.1f} mm")
     side_cam_height_var.set(f"{side_cam_height:.1f} mm")
 
+# Close app function removed - app should only close when manually closed
+
 def on_closing():
-    """Handle application closing"""
-    global stop_streaming
+    """Handle window close event"""
+    global stop_streaming, signal_handler
     
     # Set flag to stop all threads
     stop_streaming = True
@@ -434,6 +439,11 @@ def on_closing():
     
     if top_camera:
         top_camera.stop()
+    
+    # Make sure signal handler is stopped
+    if signal_handler:
+        signal_handler.stop_detection()
+        print("Signal handler stopped")
     
     print("Application closed properly")
     root.destroy()
@@ -479,9 +489,41 @@ def on_reports_close(window):
     window.destroy()
     reports_win = None
 
+def signal_handler_callback(signal_type=""):
+    """Handle modbus frame with complete measurement cycle"""
+    global streaming_active
+    
+    if signal_type == "MODBUS_FRAME":
+        print("Processing modbus frame: Starting measurement cycle")
+        
+        # If already streaming, just take a photo
+        if streaming_active:
+            root.after(0, take_photo)
+            return
+        
+        # Start the streaming to initialize cameras
+        root.after(0, start_streaming)
+        
+        # Wait for cameras to initialize (2 second delay)
+        def delayed_photo_and_stop():
+            # Take photo to process
+            take_photo()
+            
+            # Wait for processing to complete before stopping
+            def delayed_stop():
+                # Only stop streaming when done, don't close the app
+                stop_streaming_func()
+                print("Measurement cycle completed - waiting for next modbus frame")
+            
+            # Give 1 second for processing to complete
+            root.after(1000, delayed_stop)
+        
+        # Wait 2 seconds for cameras to initialize
+        root.after(2000, delayed_photo_and_stop)
+
 # Main function to create UI and start application
 def main():
-    global root, side_camera_panel, top_camera_panel, side_processed_panel, top_processed_panel
+    global root, side_panel, top_panel, side_processed_panel, top_processed_panel
     global start_button, stop_button, photo_button, auto_photo_button
     global status_label_main, status_label_side, status_label_top
     global model_value, diameter_value, height_value, tolerance_value
@@ -714,43 +756,102 @@ def main():
     ttk.Label(count_frame, text="Fail:", font=('Helvetica', 12)).grid(row=2, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(count_frame, textvariable=faulty_count_var, font=('Helvetica', 12), foreground=FAIL_COLOR).grid(row=2, column=1, sticky="w", padx=5, pady=5)
     
-    # Camera frames
+    # Camera views
     camera_frame = ttk.Frame(main_frame)
     camera_frame.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
     camera_frame.columnconfigure(0, weight=1)
     camera_frame.columnconfigure(1, weight=1)
-    camera_frame.rowconfigure(0, weight=0)  # Labels
-    camera_frame.rowconfigure(1, weight=1)  # Live feeds
-    camera_frame.rowconfigure(2, weight=0)  # Labels
-    camera_frame.rowconfigure(3, weight=1)  # Processed
+    camera_frame.rowconfigure(0, weight=1)
+
+    # Side view
+    side_frame = ttk.LabelFrame(camera_frame, text="Side View", style="Info.TLabelframe")
+    side_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    side_frame.columnconfigure(0, weight=1)
+    side_frame.rowconfigure(0, weight=1)
+    side_frame.rowconfigure(1, weight=0)
+
+    side_container = ttk.Frame(side_frame)
+    side_container.grid(row=0, column=0, sticky="nsew")
+    side_container.columnconfigure(0, weight=1)
+    side_container.columnconfigure(1, weight=1)
+    side_container.rowconfigure(0, weight=1)
+
+    side_original = ttk.LabelFrame(side_container, text="Original")
+    side_original.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
     
-    # Labels for camera feeds
-    status_label_side = ttk.Label(camera_frame, text="Side Camera (RealSense)", font=("Arial", 12))
-    status_label_side.grid(row=0, column=0, sticky="w", padx=5)
+    # Create a fixed size frame for side panel
+    side_panel_frame = ttk.Frame(side_original, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
+    side_panel_frame.pack(padx=5, pady=5)
+    side_panel_frame.pack_propagate(False)  # Prevent resizing
     
-    status_label_top = ttk.Label(camera_frame, text="Top Camera (Event Camera)", font=("Arial", 12))
-    status_label_top.grid(row=0, column=1, sticky="w", padx=5)
+    # Create label inside the fixed frame
+    side_panel = ttk.Label(side_panel_frame)
+    side_panel.place(x=0, y=0, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
+
+    side_processed_frame = ttk.LabelFrame(side_container, text="Processed")
+    side_processed_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
     
-    # Live camera feed panels
-    side_camera_panel = ttk.Label(camera_frame)
-    side_camera_panel.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+    # Create a fixed size frame for side processed panel
+    side_processed_panel_frame = ttk.Frame(side_processed_frame, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
+    side_processed_panel_frame.pack(padx=5, pady=5)
+    side_processed_panel_frame.pack_propagate(False)  # Prevent resizing
     
-    top_camera_panel = ttk.Label(camera_frame)
-    top_camera_panel.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
+    # Create label inside the fixed frame
+    side_processed_panel = ttk.Label(side_processed_panel_frame)
+    side_processed_panel.place(x=0, y=0, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
+
+    status_label_side = ttk.Label(side_frame, text="Side camera not connected", font=("Arial", 11, "bold"))
+    status_label_side.grid(row=1, column=0, sticky="w", pady=(0, 5))
+
+    # Top view
+    top_frame = ttk.LabelFrame(camera_frame, text="Top View", style="Info.TLabelframe")
+    top_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+    top_frame.columnconfigure(0, weight=1)
+    top_frame.rowconfigure(0, weight=1)
+    top_frame.rowconfigure(1, weight=0)
+
+    top_container = ttk.Frame(top_frame)
+    top_container.grid(row=0, column=0, sticky="nsew")
+    top_container.columnconfigure(0, weight=1)
+    top_container.columnconfigure(1, weight=1)
+    top_container.rowconfigure(0, weight=1)
+
+    top_original = ttk.LabelFrame(top_container, text="Original")
+    top_original.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
     
-    # Labels for processed feeds
-    ttk.Label(camera_frame, text="Processed Side View", font=("Arial", 12)).grid(row=2, column=0, sticky="w", padx=5)
-    ttk.Label(camera_frame, text="Processed Top View", font=("Arial", 12)).grid(row=2, column=1, sticky="w", padx=5)
+    # Create a fixed size frame for top panel
+    top_panel_frame = ttk.Frame(top_original, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
+    top_panel_frame.pack(padx=5, pady=5)
+    top_panel_frame.pack_propagate(False)  # Prevent resizing
     
-    # Processed camera feed panels
-    side_processed_panel = ttk.Label(camera_frame)
-    side_processed_panel.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+    # Create label inside the fixed frame
+    top_panel = ttk.Label(top_panel_frame)
+    top_panel.place(x=0, y=0, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
+
+    top_processed_frame = ttk.LabelFrame(top_container, text="Processed")
+    top_processed_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
     
-    top_processed_panel = ttk.Label(camera_frame)
-    top_processed_panel.grid(row=3, column=1, sticky="nsew", padx=5, pady=5)
+    # Create a fixed size frame for top processed panel
+    top_processed_panel_frame = ttk.Frame(top_processed_frame, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
+    top_processed_panel_frame.pack(padx=5, pady=5)
+    top_processed_panel_frame.pack_propagate(False)  # Prevent resizing
+    
+    # Create label inside the fixed frame
+    top_processed_panel = ttk.Label(top_processed_panel_frame)
+    top_processed_panel.place(x=0, y=0, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
+
+    status_label_top = ttk.Label(top_frame, text="Top camera not connected", font=("Arial", 11, "bold"))
+    status_label_top.grid(row=1, column=0, sticky="w", pady=(0, 5))
     
     # Update model parameters
     update_model_parameters()
+    
+    # Start signal handler immediately when application launches
+    # This ensures modbus frames are detected even before streaming is started
+    global signal_handler
+    signal_handler = SignalHandler(signal_callback=signal_handler_callback)
+    signal_handler.start_detection()
+    print("Modbus frame detection started - waiting for signals...")
     
     # Start the mainloop
     root.mainloop()

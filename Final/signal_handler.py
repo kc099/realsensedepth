@@ -67,17 +67,17 @@ class SignalHandler:
                 print("No Arduino device found for 24V signal detection")
                 return
                 
-            ser = serial.Serial(arduino_port, 9600, timeout=1)
+            ser = serial.Serial(arduino_port, 19200, timeout=1)
             print(f"Connected to {arduino_port} for 24V signal detection")
             
             while not self.stop_flag:
                 if ser.in_waiting:
-                    line = ser.readline().decode('utf-8').strip()
-                    if line == "24V_ON":
-                        # When 24V signal is received, call the callback
-                        print("24V signal received")
+                    # Don't try to decode as UTF-8, just check if any data is present
+                    data = ser.readline()
+                    if data:  # If any data is received, trigger the callback
+                        print("Modbus frame received")
                         if self.signal_callback:
-                            self.signal_callback()
+                            self.signal_callback(signal_type="MODBUS_FRAME")
                 time.sleep(0.1)
                 
         except Exception as e:

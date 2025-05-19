@@ -63,9 +63,9 @@ def load_settings():
             if "wheel_models" in data:
                 wheel_models = data["wheel_models"]
                 
-            print(f"Loaded settings with model: {settings['selected_model']}")
-            print(f"Loaded calibration: {settings['calibration']}")
-            print(f"Loaded models: {wheel_models}")
+            # print(f"Loaded settings with model: {settings['selected_model']}")
+            # print(f"Loaded calibration: {settings['calibration']}")
+            # print(f"Loaded models: {wheel_models}")
                 
         except Exception as e:
             print(f"Error loading settings: {e}. Using defaults.")

@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import torch
+import time
 from torchvision.models.detection import maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
@@ -9,8 +10,15 @@ from torchvision.transforms import functional as F
 from wheel_measurements import calculate_real_dimensions, measure_wheel_height_from_depth
 from utils import fit_circle_least_squares
 
-# Global model variable
+# Global model variables
 wheel_detection_model = None
+bottle_detection_model = None
+
+# MobileNetSSD class labels
+MOBILENET_CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+                  "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+                  "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+                  "sofa", "train", "tvmonitor"]
 
 def get_model_instance_segmentation(num_classes):
     """
