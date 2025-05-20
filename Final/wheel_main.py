@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageTk
 import math
+import traceback
 from datetime import datetime
 import sqlite3
 import queue
@@ -54,6 +55,15 @@ photo_count = 0
 settings_win = None
 reports_win = None
 
+# Panel size constants
+SIDE_PANEL_WIDTH = 640
+SIDE_PANEL_HEIGHT = 480
+TOP_PANEL_WIDTH = 640
+TOP_PANEL_HEIGHT = 480
+
+# Global variables for real-world measurements
+real_measurements = {}
+
 # Global variables for camera objects
 realsense_camera = None  # RealSense D435 camera for side view (depth)
 top_camera = None        # IP camera for top view
@@ -63,11 +73,10 @@ signal_handler = None  # Will be initialized at startup
 # Frame storage
 frame_top = None
 frame_side = None
-
 # Initialize global variables before GUI creation
 def init_globals():
     """Initialize global variables and configurations"""
-    global current_settings, WHEEL_MODELS
+    global current_settings, WHEEL_MODELS, realsense_camera, top_camera, side_camera
     
     # Ensure captured frames directory exists
     if not os.path.exists(SAVE_DIR):
@@ -91,6 +100,19 @@ def init_globals():
         else:
             # Default to 5 seconds
             current_settings["capture_interval"] = 5.0
+        
+    # Initialize camera objects - only create objects, don't start streaming yet
+    try:
+        # Initialize RealSense camera
+        realsense_camera = RealSenseCamera()
+        side_camera = realsense_camera  # For clarity, side_camera is the same as realsense_camera
+        
+        # Initialize top camera
+        top_camera = IPCamera(TOP_CAMERA_URL)
+        
+        print("Camera objects initialized successfully")
+    except Exception as e:
+        print(f"Error initializing camera objects: {e}")
         
     # Save settings to ensure they persist
     save_settings(current_settings, WHEEL_MODELS)
@@ -274,18 +296,38 @@ def start_streaming():
     photo_button.config(state=tk.NORMAL)
     auto_photo_button.config(state=tk.NORMAL)
     
-    # Try to initialize RealSense camera first (for side view)
-    realsense_camera = RealSenseCamera()
-    realsense_camera.start()
+    # Try to start RealSense camera first (for side view)
+    if realsense_camera is None:
+        try:
+            realsense_camera = RealSenseCamera()
+            side_camera = realsense_camera
+            print("RealSense camera object created")
+        except Exception as e:
+            print(f"Error creating RealSense camera: {e}")
+    
+    if realsense_camera:
+        try:
+            realsense_camera.start()
+            status_label_side.config(text="RealSense camera connected")
+        except Exception as e:
+            print(f"Error starting RealSense camera: {e}")
+            status_label_side.config(text="RealSense camera failed to connect")
     
     # Start top camera (event camera or fallback)
-    try:
-        top_camera = IPCamera(TOP_CAMERA_URL)
-        top_camera.start()
-        status_label_top.config(text="Top camera connected")
-    except Exception as e:
-        print(f"Error starting top camera: {e}")
-        status_label_top.config(text="Top camera failed to connect")
+    if top_camera is None:
+        try:
+            top_camera = IPCamera(TOP_CAMERA_URL)
+            print("Top camera object created")
+        except Exception as e:
+            print(f"Error creating top camera: {e}")
+    
+    if top_camera:
+        try:
+            top_camera.start()
+            status_label_top.config(text="Top camera connected")
+        except Exception as e:
+            print(f"Error starting top camera: {e}")
+            status_label_top.config(text="Top camera failed to connect")
     
     # Start frame update threads
     threading.Thread(target=update_frames, daemon=True).start()
@@ -318,14 +360,20 @@ def stop_streaming_func():
     stop_streaming = True
     streaming_active = False
     
-    # Stop all cameras
+    # Stop all cameras without destroying objects
     if realsense_camera:
-        realsense_camera.stop()
-        realsense_camera = None
+        try:
+            realsense_camera.stop()
+            print("RealSense camera streaming stopped")
+        except Exception as e:
+            print(f"Error stopping RealSense camera: {e}")
     
     if top_camera:
-        top_camera.stop()
-        top_camera = None
+        try:
+            top_camera.stop()
+            print("Top camera streaming stopped")
+        except Exception as e:
+            print(f"Error stopping top camera: {e}")
     
     # Update UI
     start_button.config(state=tk.NORMAL)
@@ -425,25 +473,103 @@ def update_model_parameters():
     side_cam_height_var.set(f"{side_cam_height:.1f} mm")
 
 # Close app function removed - app should only close when manually closed
+def detect_object():
+    """Detect object in the image using image_processing.py"""
+    global realsense_camera, side_panel, side_processed_panel
+
+    if not realsense_camera:
+        messagebox.showinfo("Camera Required", "RealSense camera not connected")
+        return
+    
+    if not streaming_active:
+        # Start streaming if not already active
+        start_streaming()
+        
+        # Wait a moment for camera to initialize
+        root.update()
+        time.sleep(1)
+        
+    try:
+        # Import necessary modules
+        import utils
+        
+        # Get depth and color frames directly from the camera object
+        depth_frame = realsense_camera.get_depth_frame()
+        color_frame = realsense_camera.get_color_frame()
+        
+        if not depth_frame or not color_frame:
+            print("No frames available - camera may not be streaming")
+            return
+            
+        # The frames are already aligned in the camera_streams.py implementation
+        # so we don't need to create an additional alignment object here
+        
+        # Use the detect_object function from image_processing module
+        from image_processing import detect_object as process_object
+        processed_image, depth_image, measurements = process_object(color_frame, depth_frame)
+        
+        if processed_image is not None and depth_image is not None:
+            # Update UI with the images
+            # utils.update_display(side_panel, depth_image, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            utils.update_display(side_processed_panel, processed_image, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            
+            # Update status label with measurements
+            distance = measurements.get("distance", 0)
+            depth = measurements.get("depth", 0)
+            height = measurements.get("height", 0)
+            obj_class = measurements.get("class", "unknown")
+            
+            status_text = f"Detected object: {obj_class} - Distance: {distance:.3f}m, Depth: {depth:.3f}m"
+            if height > 0:
+                status_text += f", Height: {height:.1f}cm"
+            
+            status_label_main.config(text=status_text)
+            
+            # Print measurements to console
+            print(f"Object Detection Results:")
+            print(f"  Class: {obj_class}")
+            print(f"  Distance: {distance:.3f} m (3D)")
+            print(f"  Depth: {depth:.3f} m (Z)")
+            print(f"  Height: {height:.1f} cm")
+        else:
+            print("Failed to process object detection")
+            
+
+    except Exception as e:
+        print(f"Error detecting object: {e}")
+        messagebox.showerror("Error", f"Failed to detect object: {str(e)}")
+        traceback.print_exc()
+
 
 def on_closing():
     """Handle window close event"""
-    global stop_streaming, signal_handler
+    global stop_streaming, signal_handler, realsense_camera, top_camera
     
     # Set flag to stop all threads
     stop_streaming = True
     
-    # Stop cameras
+    # Stop cameras with proper error handling
     if realsense_camera:
-        realsense_camera.stop()
+        try:
+            realsense_camera.stop()
+            print("RealSense camera stopped properly")
+        except Exception as e:
+            print(f"Error stopping RealSense camera: {e}")
     
     if top_camera:
-        top_camera.stop()
+        try:
+            top_camera.stop()
+            print("Top camera stopped properly")
+        except Exception as e:
+            print(f"Error stopping top camera: {e}")
     
     # Make sure signal handler is stopped
     if signal_handler:
-        signal_handler.stop_detection()
-        print("Signal handler stopped")
+        try:
+            signal_handler.stop_detection()
+            print("Signal handler stopped")
+        except Exception as e:
+            print(f"Error stopping signal handler: {e}")
     
     print("Application closed properly")
     root.destroy()
@@ -660,7 +786,10 @@ def main():
     
     auto_photo_button = ttk.Button(button_frame, text="Start Auto Capture", command=auto_capture, state=tk.DISABLED)
     auto_photo_button.grid(row=0, column=3, padx=3, pady=5)
-    
+
+    detectObject_button = ttk.Button(button_frame, text="Detect Object", command=detect_object)
+    detectObject_button.grid(row=0, column=4, padx=3, pady=5)
+
     # upload_top_button = ttk.Button(button_frame, text="Upload Top View", command=lambda: upload_image(is_top_view=True))
     # upload_top_button.grid(row=0, column=4, padx=3, pady=5)
     
@@ -668,10 +797,10 @@ def main():
     # upload_side_button.grid(row=0, column=5, padx=3, pady=5)
     
     report_button = ttk.Button(button_frame, text="Generate Report", command=open_report_window)
-    report_button.grid(row=0, column=4, padx=3, pady=5)
+    report_button.grid(row=0, column=5, padx=3, pady=5)
     
     settings_button = ttk.Button(button_frame, text="Settings", command=open_settings_window)
-    settings_button.grid(row=0, column=5, padx=3, pady=5)
+    settings_button.grid(row=0, column=6, padx=3, pady=5)
     
     # Status row
     status_frame = ttk.Frame(main_frame)
@@ -782,7 +911,7 @@ def main():
     # Create a fixed size frame for side panel
     side_panel_frame = ttk.Frame(side_original, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
     side_panel_frame.pack(padx=5, pady=5)
-    side_panel_frame.pack_propagate(False)  # Prevent resizing
+    # side_panel_frame.pack_propagate(False)  # Prevent resizing
     
     # Create label inside the fixed frame
     side_panel = ttk.Label(side_panel_frame)
@@ -794,7 +923,7 @@ def main():
     # Create a fixed size frame for side processed panel
     side_processed_panel_frame = ttk.Frame(side_processed_frame, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
     side_processed_panel_frame.pack(padx=5, pady=5)
-    side_processed_panel_frame.pack_propagate(False)  # Prevent resizing
+    # side_processed_panel_frame.pack_propagate(False)  # Prevent resizing
     
     # Create label inside the fixed frame
     side_processed_panel = ttk.Label(side_processed_panel_frame)
@@ -845,7 +974,7 @@ def main():
     
     # Update model parameters
     update_model_parameters()
-    
+   
     # Start signal handler immediately when application launches
     # This ensures modbus frames are detected even before streaming is started
     global signal_handler

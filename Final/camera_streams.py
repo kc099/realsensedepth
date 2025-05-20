@@ -17,7 +17,6 @@ except ImportError:
     print("RealSense library not found - depth camera functionality will be limited")
 
 # Global variables for stream control
-pipeline = None
 frame_queue = queue.Queue(maxsize=10)
 current_depth_image = None
 depth_scale = 0.001  # Default scale, will be updated when starting RealSense
@@ -68,72 +67,105 @@ class RealSenseCamera(CameraStreamer):
         self.depth_frame = None
         self.color_frame = None
         self.aligned_frames = None
+        self.align = None
         self.calibration = {}
-    
+        
+        # Create pipeline object once during initialization
+        if REALSENSE_AVAILABLE:
+            self.pipeline = rs.pipeline()
+            
+        # Try to load calibration
+        try:
+            if not self.pipeline:
+                print("RealSense library not available - skipping calibration")
+                return
+                
+            # Create a config object for calibration
+            config = rs.config()
+                     
+            # Enable streams
+            config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
+            config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
+            
+            # Start streaming temporarily for calibration
+            profile = self.pipeline.start(config)
+            color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
+            intrinsics = color_profile.get_intrinsics()
+            
+            # Get depth scale
+            depth_sensor = profile.get_device().first_depth_sensor()
+            self.depth_scale = depth_sensor.get_depth_scale()
+            print(f"Depth Scale: {self.depth_scale}")
+            
+            # Save to calibration file
+            calibration_data = {
+                "intrinsics": {
+                    "fx": intrinsics.fx,
+                    "fy": intrinsics.fy,
+                    "ppx": intrinsics.ppx,
+                    "ppy": intrinsics.ppy,
+                    "width": intrinsics.width,
+                    "height": intrinsics.height
+                }
+            }
+
+            # Stop streaming after calibration
+            self.pipeline.stop()
+                
+            # Save to file
+            import json
+            with open("realsense_calibration.json", "w") as f:
+                json.dump(calibration_data, f, indent=4)
+            
+            # Update calibration dict
+            self.calibration = {
+                "fx": intrinsics.fx,
+                "fy": intrinsics.fy,
+                "cx": intrinsics.ppx,
+                "cy": intrinsics.ppy
+            }
+                
+        except Exception as e:
+            print(f"Error saving calibration: {e}")
+            
+    def start(self):
+        """Override start method to initialize RealSense camera first"""
+        if self.start_realsense():
+            super().start()
+            return True
+        return False
+            
     def start_realsense(self):
         """Initialize and start RealSense camera"""
-        global pipeline, depth_scale
+        global depth_scale
         
         if not REALSENSE_AVAILABLE:
             print("RealSense library not available")
             return False
-        
-        try:
-            # Create pipeline
-            pipeline = rs.pipeline()
             
+        if not self.pipeline:
+            print("RealSense pipeline not initialized")
+            return False
+        
+        try:     
             # Create a config object
-            config = rs.config()
+            config = rs.config()  
             
             # Enable streams
             config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
             config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
             
             # Start streaming
-            profile = pipeline.start(config)
+            profile = self.pipeline.start(config)
             
             # Get depth scale
             depth_sensor = profile.get_device().first_depth_sensor()
-            depth_scale = depth_sensor.get_depth_scale()
-            self.depth_scale = depth_scale
-            print(f"Depth Scale: {depth_scale}")
+            self.depth_scale = depth_sensor.get_depth_scale()
+            depth_scale = self.depth_scale  # Update global for compatibility
+            print(f"Depth Scale: {self.depth_scale}")
             
             # Create align object
-            self.align = rs.align(rs.stream.color)
-            
-            # Try to load calibration
-            try:
-                color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
-                intrinsics = color_profile.get_intrinsics()
-                
-                # Save to calibration file
-                calibration_data = {
-                    "intrinsics": {
-                        "fx": intrinsics.fx,
-                        "fy": intrinsics.fy,
-                        "ppx": intrinsics.ppx,
-                        "ppy": intrinsics.ppy,
-                        "width": intrinsics.width,
-                        "height": intrinsics.height
-                    }
-                }
-                
-                # Save to file
-                import json
-                with open("realsense_calibration.json", "w") as f:
-                    json.dump(calibration_data, f, indent=4)
-                
-                # Update calibration dict
-                self.calibration = {
-                    "fx": intrinsics.fx,
-                    "fy": intrinsics.fy,
-                    "cx": intrinsics.ppx,
-                    "cy": intrinsics.ppy
-                }
-                
-            except Exception as e:
-                print(f"Error saving calibration: {e}")
-            
+            self.align = rs.align(rs.stream.color)    
             print("RealSense camera started successfully")
             return True
             
@@ -144,60 +176,71 @@ class RealSenseCamera(CameraStreamer):
     
     def stop_realsense(self):
         """Stop RealSense camera"""
-        global pipeline
-        
-        if pipeline:
-            try:
-                pipeline.stop()
-                print("RealSense camera stopped")
-            except Exception as e:
-                print(f"Error stopping RealSense: {e}")
+        try:
+            if self.pipeline:
+                self.pipeline.stop()
+            return True
+        except Exception as e:
+            print(f"Error stopping RealSense camera: {e}")
+            return False
+    
+    def stop(self):
+        """Stop streaming"""
+        super().stop()
+        self.stop_realsense()
+        print("RealSense camera stopped")
     
     def _stream_thread(self):
         """Stream from RealSense camera"""
         global current_depth_image, frame_queue
         
-        if not self.start_realsense():
-            print("Failed to start RealSense camera")
+        # We no longer need to call start_realsense() here as it's called from start() method
+        # which already invokes super().start() that calls this method
+        if not self.pipeline or not self.align:
+            print("RealSense pipeline or align object not initialized")
             return
         
         try:
             while not self.stop_flag:
-                # Wait for frames
-                frames = pipeline.wait_for_frames()
-                
-                # Align depth frame to color frame
-                aligned_frames = self.align.process(frames)
-                
-                # Get aligned frames
-                aligned_depth_frame = aligned_frames.get_depth_frame()
-                color_frame = aligned_frames.get_color_frame()
-                
-                if not aligned_depth_frame or not color_frame:
-                    continue
-                
-                # Store frames
-                self.aligned_frames = aligned_frames
-                self.depth_frame = aligned_depth_frame
-                self.color_frame = color_frame
-                
-                # Convert frames to numpy arrays
-                depth_image = np.asanyarray(aligned_depth_frame.get_data())
-                color_image = np.asanyarray(color_frame.get_data())
-                
-                # Store current depth image for other processing
-                current_depth_image = depth_image
-                
-                # Store current color frame
-                self.current_frame = color_image
-                
-                # Add to queue for processing
                 try:
-                    if not frame_queue.full():
-                        frame_queue.put((color_image, depth_image), block=False)
-                except queue.Full:
-                    # Queue is full, skip this frame
-                    pass
+                    # Wait for frames
+                    frames = self.pipeline.wait_for_frames(timeout_ms=1000)
+                    
+                    # Align depth frame to color frame
+                    aligned_frames = self.align.process(frames)
+                    
+                    # Get aligned frames
+                    aligned_depth_frame = aligned_frames.get_depth_frame()
+                    color_frame = aligned_frames.get_color_frame()
+                    
+                    if not aligned_depth_frame or not color_frame:
+                        continue
+                    
+                    # Store frames
+                    self.aligned_frames = aligned_frames
+                    self.depth_frame = aligned_depth_frame
+                    self.color_frame = color_frame
+                    
+                    # Convert frames to numpy arrays
+                    depth_image = np.asanyarray(aligned_depth_frame.get_data())
+                    color_image = np.asanyarray(color_frame.get_data())
+                    
+                    # Store current depth image for other processing
+                    current_depth_image = depth_image
+                    
+                    # Store current color frame
+                    self.current_frame = color_image
+                    
+                    # Add to queue for processing
+                    try:
+                        if not frame_queue.full():
+                            frame_queue.put((color_image, depth_image), block=False)
+                    except queue.Full:
+                        # Queue is full, skip this frame
+                        pass
+                except Exception as inner_e:
+                    print(f"Error processing frame: {inner_e}")
+                    time.sleep(0.1)  # Wait a bit before trying again
                 
                 # Short sleep to prevent CPU hogging
                 time.sleep(0.01)
@@ -206,7 +249,8 @@ class RealSenseCamera(CameraStreamer):
             print(f"Error in RealSense stream: {e}")
             print(traceback.format_exc())
         finally:
-            self.stop_realsense()
+            pass
+            # Don't call stop_realsense here as it will be called by the stop() method
     
     def get_depth_frame(self):
         """Get the current depth frame"""
