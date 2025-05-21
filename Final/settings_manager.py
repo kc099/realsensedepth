@@ -7,6 +7,8 @@ SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
     "selected_model": "10-13",
     "auto_capture_interval": 5,
+    "top_camera_url": "tcp://192.168.100.50:8080",  # Event camera for top view
+    "side_camera_url": "tcp://192.168.100.51:8080",  # Event camera for side view (different IP)
     "calibration": {
         "ref_diameter": 466.0,  # Reference diameter in mm
         "ref_diameter_pixels": 632.62,  # Corresponding pixels in image

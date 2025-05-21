@@ -647,7 +647,7 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
             current_settings["wheel_models"] = WHEEL_MODELS
             
             # Debug: Print what we're about to save
-            print(f"About to save settings with calibration: {current_settings.get('calibration', 'No calibration')}")
+            # print(f"About to save settings with calibration: {current_settings.get('calibration', 'No calibration')}")
             
             # Save to file
             with open("settings.json", "w") as f:
@@ -656,7 +656,7 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
             # Verify the save by reading back
             with open("settings.json", "r") as f:
                 saved_settings = json.load(f)
-                print(f"Verified saved calibration: {saved_settings.get('calibration', 'No calibration')}")
+                # print(f"Verified saved calibration: {saved_settings.get('calibration', 'No calibration')}")
                 
             messagebox.showinfo("Settings Saved", "All settings have been saved successfully.")
             
@@ -714,7 +714,7 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
             current_settings["calibration"]["wheel_height"] = float(calib_entries["wheel_height"].get())
             
             # Debug: Print what we're about to save
-            print(f"Saving calibration values: {current_settings['calibration']}")
+            # print(f"Saving calibration values: {current_settings['calibration']}")
             
             # Save all settings
             if save_settings():

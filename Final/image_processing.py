@@ -78,7 +78,7 @@ def load_model(device="cpu"):
     
     return wheel_detection_model
 
-def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=None, selected_model=None):
+def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=None, selected_model=None, wheel_height_mm=None):
     """
     Process a frame through the detection model and calculate real-world dimensions
     
@@ -89,6 +89,8 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
         camera_settings: Camera calibration settings
         wheel_models: Dictionary of wheel model specifications
         selected_model: Currently selected wheel model name
+        wheel_height_mm: Height of wheel measured from side view (in mm),
+                         used for accurate diameter calculation in top view
                      
     Returns:
         tuple: (processed_image, measurements_dict)
@@ -144,9 +146,9 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
                 
                 # Different processing based on view
                 if is_top_view:
-                    # For top view, find the circle diameter
+                    # For top view, find the circle diameter using wheel height from side view
                     processed_img, measurements = process_top_view(
-                        visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model
+                        visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model, wheel_height_mm
                     )
                 else:
                     # For side view, calculate height from depth or conventional methods
@@ -160,9 +162,9 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
         print(f"Error processing frame: {e}")
     
     # Fallback to basic processing if model fails
-    return fallback_processing(frame, is_top_view, camera_settings)
+    return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
 
-def fallback_processing(frame, is_top_view, camera_settings):
+def fallback_processing(frame, is_top_view, camera_settings, wheel_models=None, selected_model=None, wheel_height_mm=None):
     """
     Basic fallback processing when the model fails
     
@@ -170,6 +172,9 @@ def fallback_processing(frame, is_top_view, camera_settings):
         frame: Image frame
         is_top_view: True if processing top view
         camera_settings: Camera calibration settings
+        wheel_models: Dictionary of wheel model specifications
+        selected_model: Currently selected wheel model name
+        wheel_height_mm: Height of wheel measured from side view (in mm)
         
     Returns:
         tuple: (processed_image, measurements_dict)
@@ -239,26 +244,48 @@ def fallback_processing(frame, is_top_view, camera_settings):
             cv2.putText(visual_frame, f"Height: {h}px", 
                         (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
-    # Calculate real-world dimensions if we have camera settings
-    if camera_settings and measurements:
-        if is_top_view and "radius_pixels" in measurements:
+    # Process based on view type
+    if is_top_view:
+        # For top view in fallback mode, we already have basic contour detection done
+        # Now let's refine the measurement with the wheel height information
+        if "radius_pixels" in measurements and camera_settings:
+            if box is not None:
+                # We have a proper bounding box, let's use it with process_top_view
+                # First create a simple mask from the contour
+                if largest_contour is not None:
+                    mask = np.zeros(visual_frame.shape[:2], dtype=np.uint8)
+                    cv2.drawContours(mask, [largest_contour], 0, 255, -1)
+                    # Now call process_top_view with the wheel height
+                    return process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model, wheel_height_mm)
+                
+            # If we can't use process_top_view directly, calculate real-world dimensions
             measurements = calculate_real_dimensions(measurements, True, camera_settings)
-        elif not is_top_view and "height_pixels" in measurements:
-            measurements = calculate_real_dimensions(measurements, False, camera_settings)
+            
+            # Add wheel height to measurements for reference
+            if wheel_height_mm is not None:
+                measurements["wheel_height_mm"] = wheel_height_mm
+                measurements["measurement_source"] = "fallback_processing"
+    
+    elif not is_top_view and "height_pixels" in measurements and camera_settings:
+        # For side view, calculate real dimensions as before
+        measurements = calculate_real_dimensions(measurements, False, camera_settings)
+        measurements["measurement_source"] = "fallback_processing"
     
     return visual_frame, measurements
 
-def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model):
+def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model, wheel_height_mm=None):
     """
-    Process top view image to detect wheel diameter
+    Process top view image to detect wheel diameter using focal length, principal point
+    and height from the Pepperl+Fuchs industrial event camera
     
     Args:
-        frame: Image frame
+        frame: Image frame from top camera
         mask: Binary mask of the wheel
         box: Bounding box (x, y, w, h)
         camera_settings: Camera calibration settings
         wheel_models: Dictionary of wheel models
         selected_model: Currently selected model name
+        wheel_height_mm: Height of wheel measured from side view (in mm)
         
     Returns:
         tuple: (processed_image, measurements_dict)
@@ -273,6 +300,21 @@ def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_m
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     measurements = {}
+    
+    # Check if we have a valid wheel height from side view
+    if wheel_height_mm is None or wheel_height_mm <= 0:
+        # Try to get default height from selected model if available
+        if wheel_models and selected_model and selected_model in wheel_models:
+            wheel_height_mm = wheel_models[selected_model].get("height", 17.0)  # Default height from model
+            print(f"Using model height for diameter calculation: {wheel_height_mm} mm")
+        else:
+            wheel_height_mm = 17.0  # Default fallback height in mm
+            print(f"Using fallback height for diameter calculation: {wheel_height_mm} mm")
+    else:
+        print(f"Using measured wheel height for diameter calculation: {wheel_height_mm:.2f} mm")
+
+    # Add wheel height to measurements
+    measurements["wheel_height_mm"] = wheel_height_mm
     
     if contours:
         # Get the largest contour
@@ -301,31 +343,73 @@ def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_m
                 measurements["circle_center"] = (cx, cy)
                 measurements["radius_pixels"] = radius
                 
-                # Get model data for the selected model
-                if wheel_models and selected_model and selected_model in wheel_models:
-                    measurements["model_data"] = wheel_models[selected_model]
-                
-                # Calculate real-world dimensions
+                # Calculate diameter using camera parameters and wheel height
                 if camera_settings:
-                    real_measurements = calculate_real_dimensions(measurements, True, camera_settings)
+                    # Extract camera parameters
+                    focal_length = camera_settings.get("focal_length", 1000.0)  # Default if not available
+                    cam_height = camera_settings.get("base_height", 440.0)  # Camera height from base in mm
                     
-                    # Update with real-world measurements
-                    measurements.update(real_measurements)
+                    # Get image dimensions
+                    img_height, img_width = frame.shape[:2]
                     
-                    # Add diameter text
-                    if "diameter_mm" in real_measurements:
-                        diameter_mm = real_measurements["diameter_mm"]
-                        cv2.putText(visual_frame, f"Diameter: {diameter_mm:.1f}mm", 
-                                   (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    # Get principal point (center of image if not specified)
+                    ppx = camera_settings.get("ppx", img_width / 2)
+                    ppy = camera_settings.get("ppy", img_height / 2)
+                    
+                    # Calculate the distance from camera to wheel top surface
+                    # (camera height minus wheel height)
+                    distance_to_wheel = cam_height - wheel_height_mm
+                    
+                    # Ensure we don't divide by zero
+                    if distance_to_wheel <= 0:
+                        distance_to_wheel = cam_height
+                        print(f"Warning: Invalid distance to wheel ({distance_to_wheel}), using camera height")
+                    
+                    # Calculate real-world diameter using perspective formula:
+                    # real_diameter = (pixel_diameter * distance) / focal_length
+                    diameter_pixels = radius * 2  # Diameter in pixels
+                    diameter_mm = (diameter_pixels * distance_to_wheel) / focal_length
+                    
+                    # Store the results
+                    measurements["diameter_mm"] = diameter_mm
+                    measurements["distance_to_wheel"] = distance_to_wheel
+                    measurements["focal_length"] = focal_length
+                    
+                    # Get expected diameter and tolerance from model data
+                    expected_diameter = None
+                    tolerance = 0
+                    
+                    if wheel_models and selected_model and selected_model in wheel_models:
+                        model_data = wheel_models[selected_model]
+                        measurements["model_data"] = model_data
+                        expected_diameter = model_data.get("diameter", None)
+                        tolerance = model_data.get("tolerance", 0)
+                    
+                    # Check if diameter is within tolerance
+                    if expected_diameter is not None:
+                        diameter_diff = abs(diameter_mm - expected_diameter)
+                        is_ok = diameter_diff <= tolerance
+                        measurements["is_ok"] = is_ok
+                        measurements["diameter_diff"] = diameter_diff
+                        measurements["expected_diameter"] = expected_diameter
+                        measurements["tolerance"] = tolerance
+                    
+                    # Add diameter text to image
+                    cv2.putText(visual_frame, f"Diameter: {diameter_mm:.1f}mm", 
+                               (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    
+                    # Add distance information
+                    cv2.putText(visual_frame, f"Distance: {distance_to_wheel:.1f}mm", 
+                               (x, y - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    
+                    # Add pass/fail indicator based on model tolerance
+                    if "is_ok" in measurements:
+                        is_ok = measurements["is_ok"]
+                        status_text = "PASS" if is_ok else "FAIL"
+                        status_color = (0, 255, 0) if is_ok else (0, 0, 255)
                         
-                        # Add pass/fail indicator based on model tolerance
-                        if "is_ok" in real_measurements:
-                            is_ok = real_measurements["is_ok"]
-                            status_text = "PASS" if is_ok else "FAIL"
-                            status_color = (0, 255, 0) if is_ok else (0, 0, 255)
-                            
-                            cv2.putText(visual_frame, status_text, 
-                                       (x, y - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+                        cv2.putText(visual_frame, status_text, 
+                                   (x, y - 65), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
         except Exception as e:
             print(f"Error in circle fitting: {e}")
     
@@ -529,14 +613,17 @@ def detect_object(color_frame, depth_frame):
                 # Draw prominent bounding box
                 cv2.rectangle(display_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
                 
-                # Calculate measurement points more accurately
-                # Use the actual contour for height measurement instead of just bounding box
-                # Find the topmost and bottommost points of the contour
-                topmost = tuple(closest_contour[closest_contour[:, :, 1].argmin()][0])
-                bottommost = tuple(closest_contour[closest_contour[:, :, 1].argmax()][0])
+                # Calculate vertical measurement points for accurate height measurement
+                # Use the bounding box to get center coordinates
+                # Calculate center_x at the center of the bounding box width
+                center_x = x + w // 2
                 
-                center_top_x, center_top_y = topmost
-                center_bottom_x, center_bottom_y = bottommost
+                # Set top and bottom points at the same x-coordinate for vertical measurement
+                center_top_x = center_x
+                center_top_y = y  # Top of bounding box
+                
+                center_bottom_x = center_x
+                center_bottom_y = y + h  # Bottom of bounding box
                 
                 # Draw points clearly
                 cv2.circle(display_image, (center_top_x, center_top_y), 7, (255, 0, 0), -1)  # Blue for top
@@ -574,11 +661,9 @@ def detect_object(color_frame, depth_frame):
                     bottom_point = rs.rs2_deproject_pixel_to_point(
                         color_intrin, [center_bottom_x, center_bottom_y], bottom_dist)
                     
-                    # Calculate height in 3D space
-                    obj_height = np.sqrt(
-                        (top_point[0] - bottom_point[0])**2 + 
-                        (top_point[1] - bottom_point[1])**2 + 
-                        (top_point[2] - bottom_point[2])**2)
+                    # Calculate only the vertical height component (Y-axis) in 3D space
+                    # This is more accurate for true object height than Euclidean distance
+                    obj_height = abs(top_point[1] - bottom_point[1])
                     
                     # Set detection flag
                     has_detection = True
