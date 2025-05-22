@@ -12,7 +12,7 @@ except ImportError:
     print("pyserial library not found - 24V signal detection will not be available")
 
 class SignalHandler:
-    """Handler for external 24V signal detection"""
+    """Handler for external 24V signal detection and communication"""
     
     def __init__(self, signal_callback=None):
         """
@@ -25,6 +25,7 @@ class SignalHandler:
         self.thread = None
         self.stop_flag = False
         self.is_running = False
+        self.serial_port = None
         
     def start_detection(self):
         """Start 24V signal detection thread"""
@@ -66,23 +67,79 @@ class SignalHandler:
             if not arduino_port:
                 print("No Arduino device found for 24V signal detection")
                 return
-                
-            ser = serial.Serial(arduino_port, 19200, timeout=1)
+            
+            # Open the serial port and store it in the class instance
+            self.serial_port = serial.Serial(arduino_port, 19200, timeout=1)
             print(f"Connected to {arduino_port} for 24V signal detection")
             
             while not self.stop_flag:
-                if ser.in_waiting:
+                if self.serial_port.in_waiting:
                     # Don't try to decode as UTF-8, just check if any data is present
-                    data = ser.readline()
+                    data = self.serial_port.readline()
                     if data:  # If any data is received, trigger the callback
                         print("Modbus frame received")
                         if self.signal_callback:
                             self.signal_callback(signal_type="MODBUS_FRAME")
                 time.sleep(0.1)
                 
+            # Clean up
+            if self.serial_port:
+                self.serial_port.close()
+                self.serial_port = None
+                print("Serial port closed")
         except Exception as e:
-            print(f"Error in 24V detection: {e}")
-            print(traceback.format_exc())
+            print(f"Error in 24V signal detection: {e}")
+            traceback.print_exc()
+            
+    def send_measurement_data(self, model_name, diameter_mm, height_mm):
+        """Send measurement data via modbus frame
+        
+        Args:
+            model_name: Name of the wheel model
+            diameter_mm: Measured diameter in mm
+            height_mm: Measured height in mm
+        """
+        if not SERIAL_AVAILABLE:
+            print("Cannot send measurement data - pyserial not installed")
+            return False
+        
+        # Check if we have an open serial connection
+        if self.serial_port is None or not self.serial_port.is_open:
+            print("Cannot send measurement data - serial port not open")
+            print("The signal detection system must be running to send data")
+            return False
+            
+        try:
+            
+            # Format data as binary according to Modbus protocol requirements
+            # Convert model_name to a fixed 8-byte field
+            # For model_name, take first 8 chars or pad with zeros if shorter
+            model_bytes = model_name.encode('ascii', 'ignore')
+            if len(model_bytes) > 8:
+                model_bytes = model_bytes[:8]  # Truncate to 8 bytes
+            else:
+                model_bytes = model_bytes.ljust(8, b'\x00')  # Pad with zeros
+                
+            # Convert diameter to 4-byte float (32-bit)
+            import struct
+            diameter_bytes = struct.pack('>f', float(diameter_mm))  # Big-endian float
+            
+            # Convert height to 4-byte float (32-bit)
+            height_bytes = struct.pack('>f', float(height_mm))  # Big-endian float
+            
+            # Combine all bytes into a single message
+            data_bytes = model_bytes + diameter_bytes + height_bytes
+            
+            # Send binary data
+            self.serial_port.write(data_bytes)
+            print(f"Sent measurement data as binary: Model={model_name}, Diameter={diameter_mm:.1f}mm, Height={height_mm:.1f}mm")
+            return True
+            
+        except Exception as e:
+            print(f"Error sending measurement data: {e}")
+            traceback.print_exc()
+            return False
         finally:
-            if 'ser' in locals():
-                ser.close()
+            pass
+            # We don't close the serial port here since it's shared with the detection thread
+            # Serial port will be closed when the application terminates

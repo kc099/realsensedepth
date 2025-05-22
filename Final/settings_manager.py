@@ -51,6 +51,7 @@ def load_settings():
             with open(SETTINGS_FILE, "r") as f:
                 data = json.load(f)
                 
+            # Update settings from file
             if "settings" in data:
                 # Update existing settings
                 for key, value in data["settings"].items():
@@ -62,10 +63,19 @@ def load_settings():
                         else:
                             settings[key] = value
             
+            # For debugging model selection issues
+            # print(f"DEBUG: Raw data from settings file: {data}")
+            
+            # Check directly for selected_model in data
+            if "selected_model" in data:
+                settings["selected_model"] = data["selected_model"]
+                # print(f"DEBUG: Found selected_model directly in data: {data['selected_model']}")
+            
             if "wheel_models" in data:
                 wheel_models = data["wheel_models"]
                 
-            # print(f"Loaded settings with model: {settings['selected_model']}")
+            # print(f"DEBUG: Loaded settings with model: {settings['selected_model']}")
+            # print(f"DEBUG: Wheel models: {list(wheel_models.keys())}")
             # print(f"Loaded calibration: {settings['calibration']}")
             # print(f"Loaded models: {wheel_models}")
                 
@@ -89,8 +99,11 @@ def save_settings(settings, wheel_models):
         data = {
             "settings": settings,
             "wheel_models": wheel_models,
-            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+            "selected_model": settings.get("selected_model", "10-13"),  # Save selected model at the top level to ensure it's loaded
+            "last_updated": time.strftime("%d-%m-%Y %H:%M:%S")
         }
+        
+        # print(f"DEBUG: Saving selected model: {settings.get('selected_model', '10-13')}")
         
         with open(SETTINGS_FILE, "w") as f:
             json.dump(data, f, indent=4)

@@ -4,6 +4,13 @@ import json
 from datetime import datetime
 import sqlite3
 
+# Import app icon module
+try:
+    from app_icon import set_app_icon
+except ImportError:
+    def set_app_icon(window):
+        pass  # Fallback if module not available
+
 def init_settings_db():
     """Initialize database for operator and model change tracking"""
     conn = sqlite3.connect('wheel_inspection.db')
@@ -37,6 +44,9 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
     settings_window.title("System Settings")
     settings_window.geometry("1100x800")
     settings_window.configure(background="#FFFFFF")
+    
+    # Set custom icon for settings window
+    set_app_icon(settings_window)
     
     # Keep window on top initially
     settings_window.lift()
@@ -190,7 +200,9 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
     ttk.Label(camera_frame, text="Capture Interval (s):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
     interval_entry = ttk.Entry(camera_frame, width=10)
     interval_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-    interval_entry.insert(0, str(current_settings["capture_interval"]))
+    # Safely retrieve capture_interval with a default of 5 seconds
+    capture_interval = current_settings.get("capture_interval", 5)
+    interval_entry.insert(0, str(capture_interval))
     
     # Model Selection with password protection
     model_frame = ttk.LabelFrame(user_frame, text="Wheel Model Selection")
@@ -300,9 +312,9 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
                 conn.commit()
                 conn.close()
                 
-                # Save settings to file
-                with open("settings.json", "w") as f:
-                    json.dump(current_settings, f, indent=4)
+                # Save settings using the proper settings_manager function
+                from settings_manager import save_settings
+                save_settings(current_settings, WHEEL_MODELS)
                 
                 refresh_history()
                 model_dialog.destroy()
@@ -636,44 +648,6 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
     create_calib_entry(realsense_frame, "Depth Units:", "depth_units", 1, "mm")
     create_calib_entry(realsense_frame, "Depth Min:", "depth_min", 2, "mm")
     create_calib_entry(realsense_frame, "Depth Max:", "depth_max", 3, "mm")
-    
-    def save_settings():
-        """Save all settings including calibration values and wheel models"""
-        try:
-            # Update current_settings with values from UI
-            current_settings["capture_interval"] = float(interval_entry.get())
-            
-            # Include wheel models in the settings
-            current_settings["wheel_models"] = WHEEL_MODELS
-            
-            # Debug: Print what we're about to save
-            # print(f"About to save settings with calibration: {current_settings.get('calibration', 'No calibration')}")
-            
-            # Save to file
-            with open("settings.json", "w") as f:
-                json.dump(current_settings, f, indent=4)
-                
-            # Verify the save by reading back
-            with open("settings.json", "r") as f:
-                saved_settings = json.load(f)
-                # print(f"Verified saved calibration: {saved_settings.get('calibration', 'No calibration')}")
-                
-            messagebox.showinfo("Settings Saved", "All settings have been saved successfully.")
-            
-            # Update model parameters in main window
-            update_model_parameters()
-            
-            # Ensure settings window stays on top
-            settings_window.lift()
-            settings_window.focus_force()
-            
-            return True
-        except ValueError as e:
-            messagebox.showerror("Error", f"Invalid value: {str(e)}")
-            return False
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
-            return False
     
     # Edit Calibration button (password protected)
     def edit_calibration():

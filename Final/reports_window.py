@@ -6,6 +6,13 @@ from datetime import datetime
 import pandas as pd
 from database import get_daily_report, get_monthly_report, get_date_range_report
 
+# Import app icon module
+try:
+    from app_icon import set_app_icon
+except ImportError:
+    def set_app_icon(window):
+        pass  # Fallback if module not available
+
 # Colors from main application
 OK_COLOR = "#2ECC71"  # Green for OK status
 NOK_COLOR = "#E74C3C"  # Red for NOK status
@@ -16,6 +23,9 @@ def show_report_window(root):
     report_window = tk.Toplevel(root)
     report_window.title("Inspection Reports")
     report_window.geometry("1000x700")
+    
+    # Set custom icon for reports window
+    set_app_icon(report_window)
     
     # Date selection
     date_frame = ttk.Frame(report_window)
@@ -46,22 +56,26 @@ def show_report_window(root):
     
     ttk.Label(daily_stats_frame, text="Today's Count").pack()
     today = datetime.now().strftime("%Y-%m-%d")
-    daily_counts = get_daily_report(today)[0]
+    total_count, model_counts, daily_inspections = get_daily_report(today)
     
-    ttk.Label(daily_stats_frame, text=f"Total: {daily_counts[0]}").pack()
-    ttk.Label(daily_stats_frame, text=f"OK: {daily_counts[1]}", foreground=OK_COLOR).pack()
-    ttk.Label(daily_stats_frame, text=f"NOK: {daily_counts[2]}", foreground=NOK_COLOR).pack()
+    ttk.Label(daily_stats_frame, text=f"Total: {total_count}").pack()
+    
+    # Display model-specific counts instead of OK/NOK counts
+    for model, count in model_counts:
+        ttk.Label(daily_stats_frame, text=f"{model}: {count}").pack()
     
     monthly_stats_frame = ttk.Frame(stats_frame)
     monthly_stats_frame.pack(side=tk.LEFT, padx=10, pady=5)
     
     ttk.Label(monthly_stats_frame, text="Monthly Count").pack()
     current_month = datetime.now().strftime("%Y-%m")
-    monthly_counts = get_monthly_report(current_month[:4], current_month[5:7])
+    total_count, model_counts = get_monthly_report(current_month[:4], current_month[5:7])
     
-    ttk.Label(monthly_stats_frame, text=f"Total: {monthly_counts[0]}").pack()
-    ttk.Label(monthly_stats_frame, text=f"OK: {monthly_counts[1]}", foreground=OK_COLOR).pack()
-    ttk.Label(monthly_stats_frame, text=f"NOK: {monthly_counts[2]}", foreground=NOK_COLOR).pack()
+    ttk.Label(monthly_stats_frame, text=f"Total: {total_count}").pack()
+    
+    # Display model-specific counts instead of OK/NOK counts
+    for model, count in model_counts:
+        ttk.Label(monthly_stats_frame, text=f"{model}: {count}").pack()
     
     # Report treeview
     report_tree_frame = ttk.Frame(report_window)
@@ -71,7 +85,7 @@ def show_report_window(root):
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     
     report_tree = ttk.Treeview(report_tree_frame, columns=(
-        "ID", "Part No", "Model", "Date", "Diameter", "Thickness", "Height", "Result"
+        "ID", "Part No", "Model", "Date", "Diameter", "Height"
     ), yscrollcommand=scrollbar.set)
     
     report_tree.heading("#0", text="")
@@ -80,19 +94,15 @@ def show_report_window(root):
     report_tree.heading("Model", text="Model")
     report_tree.heading("Date", text="Date")
     report_tree.heading("Diameter", text="Diameter (mm)")
-    report_tree.heading("Thickness", text="Thickness (mm)")
     report_tree.heading("Height", text="Height (mm)")
-    report_tree.heading("Result", text="Result")
     
     report_tree.column("#0", width=0, stretch=tk.NO)
     report_tree.column("ID", width=50, anchor=tk.CENTER)
     report_tree.column("Part No", width=120, anchor=tk.CENTER)
     report_tree.column("Model", width=100, anchor=tk.CENTER)
     report_tree.column("Date", width=120, anchor=tk.CENTER)
-    report_tree.column("Diameter", width=100, anchor=tk.CENTER)
-    report_tree.column("Thickness", width=100, anchor=tk.CENTER)
-    report_tree.column("Height", width=80, anchor=tk.CENTER)
-    report_tree.column("Result", width=80, anchor=tk.CENTER)
+    report_tree.column("Diameter", width=120, anchor=tk.CENTER)
+    report_tree.column("Height", width=100, anchor=tk.CENTER)
     
     report_tree.pack(fill=tk.BOTH, expand=True)
     scrollbar.config(command=report_tree.yview)
@@ -102,7 +112,7 @@ def show_report_window(root):
     return report_window
 def generate_report(start_date, end_date, report_tree):
     """Generate and display report for the selected date range."""
-    inspections = get_date_range_report(start_date, end_date)
+    model_counts, inspections = get_date_range_report(start_date, end_date)
     
     # Clear existing data
     for item in report_tree.get_children():
@@ -118,21 +128,18 @@ def generate_report(start_date, end_date, report_tree):
             inspection[2],   # Model
             inspection[3],  # Date
             f"{inspection[4]:.2f}" if inspection[4] else "N/A",  # Diameter
-            f"{inspection[5]:.2f}" if inspection[5] else "N/A",  # Thickness
-            f"{inspection[6]:.2f}" if inspection[6] else "N/A",  # Height
-            inspection[7]    # Result
+            f"{inspection[5]:.2f}" if inspection[5] else "N/A"   # Height
         ))
 
 def export_to_excel(start_date, end_date):
     """Export inspection data to Excel file."""
-    inspections = get_date_range_report(start_date, end_date)
+    model_counts, inspections = get_date_range_report(start_date, end_date)
     if not inspections:
         messagebox.showwarning("No Data", "No inspection data found for the selected date range")
         return
     
     df = pd.DataFrame(inspections, columns=[
-        "ID", "Part No", "Model", "Timestamp", "Diameter (mm)", 
-        "Thickness (mm)", "Height (mm)", "Result"
+        "ID", "Part No", "Model", "Timestamp", "Diameter (mm)", "Height (mm)"
     ])
     
     save_path = filedialog.asksaveasfilename(

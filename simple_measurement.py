@@ -39,8 +39,8 @@ def main():
     config = rs.config()
     
     # Enable streams at the same resolution for both depth and color
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 15)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 15)
     
     # Start streaming
     profile = pipeline.start(config)

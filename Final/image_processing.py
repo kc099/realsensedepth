@@ -244,19 +244,24 @@ def fallback_processing(frame, is_top_view, camera_settings, wheel_models=None, 
             cv2.putText(visual_frame, f"Height: {h}px", 
                         (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
+    # Create bounding box from contour if we have one
+    box = None
+    if largest_contour is not None:
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        box = (x, y, w, h)
+    
     # Process based on view type
     if is_top_view:
         # For top view in fallback mode, we already have basic contour detection done
         # Now let's refine the measurement with the wheel height information
         if "radius_pixels" in measurements and camera_settings:
-            if box is not None:
+            if box is not None and largest_contour is not None:
                 # We have a proper bounding box, let's use it with process_top_view
                 # First create a simple mask from the contour
-                if largest_contour is not None:
-                    mask = np.zeros(visual_frame.shape[:2], dtype=np.uint8)
-                    cv2.drawContours(mask, [largest_contour], 0, 255, -1)
-                    # Now call process_top_view with the wheel height
-                    return process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model, wheel_height_mm)
+                mask = np.zeros(visual_frame.shape[:2], dtype=np.uint8)
+                cv2.drawContours(mask, [largest_contour], 0, 255, -1)
+                # Now call process_top_view with the wheel height
+                return process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model, wheel_height_mm)
                 
             # If we can't use process_top_view directly, calculate real-world dimensions
             measurements = calculate_real_dimensions(measurements, True, camera_settings)
@@ -375,24 +380,11 @@ def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_m
                     measurements["distance_to_wheel"] = distance_to_wheel
                     measurements["focal_length"] = focal_length
                     
-                    # Get expected diameter and tolerance from model data
-                    expected_diameter = None
-                    tolerance = 0
-                    
+                    # Just store reference to model data without tolerance checks
                     if wheel_models and selected_model and selected_model in wheel_models:
                         model_data = wheel_models[selected_model]
                         measurements["model_data"] = model_data
-                        expected_diameter = model_data.get("diameter", None)
-                        tolerance = model_data.get("tolerance", 0)
-                    
-                    # Check if diameter is within tolerance
-                    if expected_diameter is not None:
-                        diameter_diff = abs(diameter_mm - expected_diameter)
-                        is_ok = diameter_diff <= tolerance
-                        measurements["is_ok"] = is_ok
-                        measurements["diameter_diff"] = diameter_diff
-                        measurements["expected_diameter"] = expected_diameter
-                        measurements["tolerance"] = tolerance
+                        measurements["model_name"] = selected_model
                     
                     # Add diameter text to image
                     cv2.putText(visual_frame, f"Diameter: {diameter_mm:.1f}mm", 
@@ -402,14 +394,11 @@ def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_m
                     cv2.putText(visual_frame, f"Distance: {distance_to_wheel:.1f}mm", 
                                (x, y - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     
-                    # Add pass/fail indicator based on model tolerance
-                    if "is_ok" in measurements:
-                        is_ok = measurements["is_ok"]
-                        status_text = "PASS" if is_ok else "FAIL"
-                        status_color = (0, 255, 0) if is_ok else (0, 0, 255)
-                        
-                        cv2.putText(visual_frame, status_text, 
-                                   (x, y - 65), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+                    # Add model name information
+                    if "model_name" in measurements:
+                        model_name = measurements["model_name"]
+                        cv2.putText(visual_frame, f"Model: {model_name}", 
+                                   (x, y - 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         except Exception as e:
             print(f"Error in circle fitting: {e}")
     

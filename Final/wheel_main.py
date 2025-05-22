@@ -24,6 +24,7 @@ from signal_handler import SignalHandler
 from database import init_db, add_inspection
 from reports_window import show_report_window
 from settings_window import show_settings_window
+from app_icon import set_app_icon
 
 # Set the environment variable to avoid OpenMP warnings
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -36,9 +37,9 @@ TOP_PANEL_WIDTH = 640
 TOP_PANEL_HEIGHT = 480
 
 # UI Color Scheme
-BG_COLOR = "#f0f0f0"
+BG_COLOR = "#AFE1AF"
 TEXT_COLOR = "#333333"
-BUTTON_COLOR = "#4a7abc"
+BUTTON_COLOR = "#023020"
 HIGHLIGHT_COLOR = "#5c8cd5"
 PASS_COLOR = "#4caf50"
 FAIL_COLOR = "#f44336"
@@ -54,6 +55,9 @@ auto_capture_active = False
 photo_count = 0
 settings_win = None
 reports_win = None
+wheel_model_counts = {}
+model_count_vars = {}  # Will hold StringVar for each model count
+current_model_display = None  # Will hold the StringVar for current model in result frame
 
 # Panel size constants
 SIDE_PANEL_WIDTH = 640
@@ -217,7 +221,6 @@ def take_photo():
         
         if side_measured_height is not None:
             measured_height_var.set(f"{side_measured_height:.1f} mm")
-            side_result_text.set(f"Side: Height={side_measured_height:.2f} mm")
             current_settings["calibration"]["wheel_height"] = side_measured_height
             print(f"Updated wheel height for diameter calculation: {side_measured_height:.2f} mm")
         
@@ -254,52 +257,42 @@ def take_photo():
         # Clear the "No Side Camera" message if it exists
         status_label_side.config(text="Using top camera image for side view")
     
+    # Get measurements and update display
     if measurements_top.get("type") == "Round":
         diameter_mm = measurements_top.get("diameter_mm", 0)
         measured_dia_var.set(f"{diameter_mm:.1f} mm")
-        
-        # Check if diameter is within tolerance
-        is_ok_top = measurements_top.get("is_ok", False)
-        top_result_text.set(" OK" if is_ok_top else " NOT OK")
     else:
-        top_result_text.set("Top view: No data")
-        is_ok_top = False
+        measured_dia_var.set("No data")
+        diameter_mm = 0
 
-    # Update result display for side view  
+    # Update height measurement display
     if measurements_side.get("type") == "Side":
         height_mm = measurements_side.get("height_mm", 0)
         measured_height_var.set(f"{height_mm:.1f} mm")
-        
-        # Check if height is within tolerance
-        is_ok_side = measurements_side.get("is_ok", False)
-        side_result_text.set(" OK" if is_ok_side else " NOT OK")
     else:
-        side_result_text.set("Side view: No data")
-        is_ok_side = False
-
-    # Update overall result status
-    overall_ok = is_ok_top and is_ok_side
-    result_status_var.set("OK" if overall_ok else "NOT OK")
-    
-    # Update result frame style
-    update_result_frame()
+        measured_height_var.set("No data")
+        height_mm = 0
+        
+    # Update the current model display
+    global current_model_display
+    model_type = current_settings["selected_model"]
+    if current_model_display:
+        current_model_display.set(model_type)
+        
+    # No need for status updates since we're not checking tolerances anymore
     
     # Save to database
     part_no = f"INDIP {timestamp.split('_')[0]} {photo_count}"
     model_type = current_settings["selected_model"]
     diameter_mm = measurements_top.get("diameter_mm", 0)
     height_mm = measurements_side.get("height_mm", 0)
-    camera_height_mm = float(top_cam_height_var.get().split()[0]) if top_cam_height_var.get() else current_settings["calibration"]["base_height"]
-    test_result = "OK" if overall_ok else "NOT OK"
     
-    # Update database
+    # Update database with simplified parameters (no test_result or thickness_mm)
     add_inspection(
         part_no, 
         model_type, 
         diameter_mm, 
-        camera_height_mm,
         height_mm, 
-        test_result, 
         filename_top if filename_top else '', 
         filename_side if filename_side else ''
     )
@@ -307,15 +300,20 @@ def take_photo():
     # Update wheel counts
     update_wheel_counts()
     
-    status_label_main.config(text=f"Captured and processed frames {photo_count} at {timestamp}")
-
-def update_result_frame():
-    """Update the result panel appearance based on status"""
-    status = result_status_var.get()
-    if status == "OK":
-        result_status_label.config(foreground=PASS_COLOR)
+    # Send measurement data via modbus frame after processing
+    if signal_handler:
+        try:
+            signal_handler.send_measurement_data(model_type, diameter_mm, height_mm)
+            status_text = f"Captured and processed frames {photo_count} at {timestamp}. Measurement data sent."
+        except Exception as e:
+            print(f"Error sending measurement data: {e}")
+            status_text = f"Captured and processed frames {photo_count} at {timestamp}. Failed to send data."
     else:
-        result_status_label.config(foreground=FAIL_COLOR)
+        status_text = f"Captured and processed frames {photo_count} at {timestamp}. Signal handler not available."
+    
+    status_label_main.config(text=status_text)
+
+# Function removed as we no longer track passing/failing status
 
 def start_streaming():
     """Start streaming from cameras"""
@@ -475,34 +473,43 @@ def auto_capture_thread(interval):
 
 
 def update_wheel_counts():
-    """Update the wheel count statistics from database"""
-    conn = sqlite3.connect('wheel_inspection.db')
-    cursor = conn.cursor()
+    """Update the wheel count display from database with counts by model"""
+    global wheel_model_counts
     
     try:
-        # Get counts
+        conn = sqlite3.connect('wheel_inspection.db')
+        cursor = conn.cursor()
+        
+        # Get total count
         cursor.execute("SELECT COUNT(*) FROM inspections")
         total_count = cursor.fetchone()[0] or 0
-        
-        cursor.execute("SELECT COUNT(*) FROM inspections WHERE test_result = 'OK'")
-        passed_count = cursor.fetchone()[0] or 0
-        
-        cursor.execute("SELECT COUNT(*) FROM inspections WHERE test_result = 'NOT OK'")
-        faulty_count = cursor.fetchone()[0] or 0
-        
-        # Update UI
         total_count_var.set(str(total_count))
-        passed_count_var.set(str(passed_count))
-        faulty_count_var.set(str(faulty_count))
+        
+        # Get counts by model
+        cursor.execute("SELECT model_type, COUNT(*) FROM inspections GROUP BY model_type")
+        model_counts = cursor.fetchall()
+        
+        # Update wheel model count variables
+        wheel_model_counts = {}
+        for model, count in model_counts:
+            wheel_model_counts[model] = count
+            
+        # Update UI elements if they exist
+        for model in WHEEL_MODELS.keys():
+            if model in wheel_model_counts and model in model_count_vars:
+                model_count_vars[model].set(str(wheel_model_counts.get(model, 0)))
+            elif model in model_count_vars:
+                model_count_vars[model].set('0')
     except Exception as e:
         print(f"Error updating wheel counts: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def update_model_parameters():
     """Update UI with current model parameters"""
     # Reload settings to ensure we have the latest saved values
-    global current_settings, WHEEL_MODELS
+    global current_settings, WHEEL_MODELS, current_model_display
     current_settings, WHEEL_MODELS = load_settings()
     
     model_name = current_settings.get("selected_model", "10-13")
@@ -510,6 +517,11 @@ def update_model_parameters():
     
     # Update model info display
     model_value.set(model_name)
+    
+    # Update current model display in results frame
+    if current_model_display is not None:
+        current_model_display.set(model_name)
+        print(f"Updated model display to: {model_name}")
     
     # Show diameter range
     min_dia = model_data.get("min_dia", 0)
@@ -520,9 +532,9 @@ def update_model_parameters():
     height = model_data.get("height", 0)
     height_value.set(f"{height} mm")
     
-    # Show tolerance
-    tolerance = model_data.get("tolerance", 0)
-    tolerance_value.set(f"{tolerance} mm")
+    # # Show tolerance
+    # tolerance = model_data.get("tolerance", 0)
+    # tolerance_value.set(f"{tolerance} mm")
     
     # Update camera heights from settings, not measured values
     top_cam_height = current_settings["calibration"]["base_height"]
@@ -739,6 +751,9 @@ def main():
     root.configure(background=BG_COLOR)
     root.protocol("WM_DELETE_WINDOW", on_closing)
     
+    # Set custom application icon
+    set_app_icon(root)
+    
     # Configure style
     style = ttk.Style()
     style.theme_use('clam')
@@ -746,22 +761,20 @@ def main():
     style.configure('TLabelframe', background=BG_COLOR, foreground=TEXT_COLOR)
     style.configure('TLabelframe.Label', background=BG_COLOR, foreground=TEXT_COLOR)
     style.configure('TLabel', background=BG_COLOR, foreground=TEXT_COLOR)
-    style.configure('TButton', background=BUTTON_COLOR, foreground=TEXT_COLOR, font=('Helvetica', 12, 'bold'))
+    style.configure('TButton', background=BUTTON_COLOR, foreground="white", font=('Helvetica', 12, 'bold'))
     style.map('TButton', background=[('active', HIGHLIGHT_COLOR)])
     
     # Initialize Tkinter variables
     height_adjustment_var = tk.StringVar(value=str(current_settings["calibration"]["base_height"]))
     model_value = tk.StringVar(value=current_settings["selected_model"])
     diameter_value = tk.StringVar(value="0.0 mm")
-    thickness_value = tk.StringVar(value="0.0 mm")
     height_value = tk.StringVar(value="0.0 mm")
-    tolerance_value = tk.StringVar(value="0.0 mm")
-    status_value = tk.StringVar(value="Pending")
-    top_result_text = tk.StringVar(value="No data")
-    side_result_text = tk.StringVar(value="No data")
     measured_dia_var = tk.StringVar(value="0.0 mm")
     measured_height_var = tk.StringVar(value="0.0 mm")
-    result_status_var = tk.StringVar(value="Pending")
+    
+    # Initialize global current_model_display for result frame
+    global current_model_display
+    current_model_display = tk.StringVar(value=current_settings["selected_model"])
     
     # Camera height variables
     top_cam_height_var = tk.StringVar(value=f"{current_settings['calibration']['base_height']:.1f} mm")
@@ -773,15 +786,22 @@ def main():
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM inspections")
     total_count = cursor.fetchone()[0] or 0
-    cursor.execute("SELECT COUNT(*) FROM inspections WHERE test_result = 'OK'")
-    passed_count = cursor.fetchone()[0] or 0
-    cursor.execute("SELECT COUNT(*) FROM inspections WHERE test_result = 'NOT OK'")
-    faulty_count = cursor.fetchone()[0] or 0
+    
+    # Get counts by model
+    cursor.execute("SELECT model_type, COUNT(*) FROM inspections GROUP BY model_type")
+    model_counts = cursor.fetchall() or []
     conn.close()
     
+    # Initialize global count variables
     total_count_var = tk.StringVar(value=str(total_count))
-    passed_count_var = tk.StringVar(value=str(passed_count))
-    faulty_count_var = tk.StringVar(value=str(faulty_count))
+    
+    # Create model count variables
+    global model_count_vars, wheel_model_counts
+    wheel_model_counts = {model: count for model, count in model_counts}
+    
+    # Initialize a StringVar for each model
+    for model in WHEEL_MODELS.keys():
+        model_count_vars[model] = tk.StringVar(value=str(wheel_model_counts.get(model, 0)))
     
     # Main layout
     main_frame = ttk.Frame(root, padding="10")
@@ -823,7 +843,8 @@ def main():
         header_frame,
         text="WHEEL DIMENSION ANALYZER",
         font=("Arial", 26, "bold"),
-        anchor="center"
+        anchor="center",
+        foreground="blue"
     )
     app_title_label.grid(row=0, column=1, sticky="ew")
     
@@ -907,8 +928,7 @@ def main():
     ttk.Label(model_frame, text="Height:", font=('Helvetica', 12)).grid(row=2, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(model_frame, textvariable=height_value, font=('Helvetica', 12)).grid(row=2, column=1, sticky="w", padx=5, pady=5)
     
-    ttk.Label(model_frame, text="Tolerance:", font=('Helvetica', 12)).grid(row=3, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(model_frame, textvariable=tolerance_value, font=('Helvetica', 12)).grid(row=3, column=1, sticky="w", padx=5, pady=5)
+    # Tolerance references removed as requested
     
     ttk.Label(model_frame, text="Top Camera Height:", font=('Helvetica', 12)).grid(row=4, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(model_frame, textvariable=top_cam_height_var, font=('Helvetica', 12)).grid(row=4, column=1, sticky="w", padx=5, pady=5)
@@ -917,40 +937,40 @@ def main():
     ttk.Label(model_frame, textvariable=side_cam_height_var, font=('Helvetica', 12)).grid(row=5, column=1, sticky="w", padx=5, pady=5)
     
     # Result panel
-    result_frame = ttk.LabelFrame(info_frame, text="Result", style="Info.TLabelframe")
+    result_frame = ttk.LabelFrame(info_frame, text="Measurement Results", style="Info.TLabelframe")
     result_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
     
-    ttk.Label(result_frame, text="Top view:", font=('Helvetica', 12)).grid(row=0, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(result_frame, textvariable=top_result_text, font=('Helvetica', 12)).grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    # Add model name at the top of results
+    ttk.Label(result_frame, text="Model:", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    # Use the global current_model_display that was initialized earlier
+    ttk.Label(result_frame, textvariable=current_model_display, font=('Helvetica', 12)).grid(row=0, column=1, sticky="w", padx=5, pady=5)
     
+    # Display diameter measurement
     ttk.Label(result_frame, text="Measured Diameter:", font=('Helvetica', 12)).grid(row=1, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(result_frame, textvariable=measured_dia_var, font=('Helvetica', 12)).grid(row=1, column=1, sticky="w", padx=5, pady=5)
     
-    ttk.Label(result_frame, text="Side view:", font=('Helvetica', 12)).grid(row=2, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(result_frame, textvariable=side_result_text, font=('Helvetica', 12)).grid(row=2, column=1, sticky="w", padx=5, pady=5)
-    
-    ttk.Label(result_frame, text="Measured Height:", font=('Helvetica', 12)).grid(row=3, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(result_frame, textvariable=measured_height_var, font=('Helvetica', 12)).grid(row=3, column=1, sticky="w", padx=5, pady=5)
+    # Display height measurement
+    ttk.Label(result_frame, text="Measured Height:", font=('Helvetica', 12)).grid(row=2, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(result_frame, textvariable=measured_height_var, font=('Helvetica', 12)).grid(row=2, column=1, sticky="w", padx=5, pady=5)
     
     ttk.Label(result_frame, text="Side Camera Distance:", font=('Helvetica', 12)).grid(row=4, column=0, sticky="w", padx=5, pady=5)
     ttk.Label(result_frame, textvariable=side_cam_distance_result, font=('Helvetica', 12)).grid(row=4, column=1, sticky="w", padx=5, pady=5)
     
-    ttk.Label(result_frame, text="Result:", font=('Helvetica', 12, 'bold')).grid(row=5, column=0, sticky="w", padx=5, pady=5)
-    result_status_label = ttk.Label(result_frame, textvariable=result_status_var, font=('Helvetica', 12, 'bold'))
-    result_status_label.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+    # Result status references removed
     
-    # Wheel count panel
-    count_frame = ttk.LabelFrame(info_frame, text="Wheel Count", style="Info.TLabelframe")
+    # Wheel count panel - updated to show model counts
+    count_frame = ttk.LabelFrame(info_frame, text="Wheel Count by Model", style="Info.TLabelframe")
     count_frame.grid(row=0, column=2, sticky="nsew", padx=(5, 10), pady=5)
     
-    ttk.Label(count_frame, text="Total:", font=('Helvetica', 12)).grid(row=0, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(count_frame, textvariable=total_count_var, font=('Helvetica', 12)).grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    ttk.Label(count_frame, text="Total:", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    ttk.Label(count_frame, textvariable=total_count_var, font=('Helvetica', 12, 'bold')).grid(row=0, column=1, sticky="w", padx=5, pady=5)
     
-    ttk.Label(count_frame, text="Pass:", font=('Helvetica', 12)).grid(row=1, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(count_frame, textvariable=passed_count_var, font=('Helvetica', 12), foreground=PASS_COLOR).grid(row=1, column=1, sticky="w", padx=5, pady=5)
-    
-    ttk.Label(count_frame, text="Fail:", font=('Helvetica', 12)).grid(row=2, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(count_frame, textvariable=faulty_count_var, font=('Helvetica', 12), foreground=FAIL_COLOR).grid(row=2, column=1, sticky="w", padx=5, pady=5)
+    # Add each model as a row in the count frame
+    row = 1
+    for model_name in sorted(WHEEL_MODELS.keys()):
+        ttk.Label(count_frame, text=f"{model_name}:", font=('Helvetica', 11)).grid(row=row, column=0, sticky="w", padx=5, pady=2)
+        ttk.Label(count_frame, textvariable=model_count_vars[model_name], font=('Helvetica', 11)).grid(row=row, column=1, sticky="w", padx=5, pady=2)
+        row += 1
     
     # Camera views
     camera_frame = ttk.Frame(main_frame)
