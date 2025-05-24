@@ -73,13 +73,25 @@ class SignalHandler:
             print(f"Connected to {arduino_port} for 24V signal detection")
             
             while not self.stop_flag:
+                # Check if there's any data on the serial port
                 if self.serial_port.in_waiting:
-                    # Don't try to decode as UTF-8, just check if any data is present
-                    data = self.serial_port.readline()
-                    if data:  # If any data is received, trigger the callback
-                        print("Modbus frame received")
+                    # Any data on the serial port is treated as a trigger signal
+                    # No need to decode or parse the data
+                    try:
+                        # Read the data to clear the buffer (don't need to do anything with it)
+                        self.serial_port.read(self.serial_port.in_waiting)
+                        
+                        # Log the signal detection
+                        print("24V signal detected - triggering measurement")
+                        
+                        # Trigger the callback function if it exists
                         if self.signal_callback:
-                            self.signal_callback(signal_type="MODBUS_FRAME")
+                            # Directly trigger a measurement
+                            self.signal_callback(signal_type="24V_SIGNAL")
+                    except Exception as e:
+                        print(f"Error reading signal data: {e}")
+                
+                # Short sleep to prevent CPU overuse
                 time.sleep(0.1)
                 
             # Clean up

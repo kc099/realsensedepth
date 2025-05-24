@@ -39,8 +39,31 @@ def show_report_window(root):
     end_date = DateEntry(date_frame)
     end_date.pack(side=tk.LEFT, padx=5)
     
+    # Create TreeView for report data
+    report_frame = ttk.Frame(report_window)
+    report_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    
+    # Scrollbar
+    scrollbar = ttk.Scrollbar(report_frame)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    # Create TreeView with scrollbar
+    columns = ("ID", "Part No", "Model", "Date", "Diameter (mm)", "Height (mm)")
+    report_tree = ttk.Treeview(report_frame, columns=columns, show="headings", height=20)
+    report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    
+    # Configure scrollbar
+    scrollbar.config(command=report_tree.yview)
+    report_tree.config(yscrollcommand=scrollbar.set)
+    
+    # Set column headings
+    for col in columns:
+        report_tree.heading(col, text=col)
+        report_tree.column(col, width=100)
+    
+    # Now create buttons with correct references to the report_tree
     generate_button = ttk.Button(date_frame, text="Generate Report", 
-                               command=lambda: generate_report(start_date.get(), end_date.get()))
+                               command=lambda: generate_report(start_date.get(), end_date.get(), report_tree))
     generate_button.pack(side=tk.LEFT, padx=10)
     
     export_button = ttk.Button(date_frame, text="Export to Excel", 

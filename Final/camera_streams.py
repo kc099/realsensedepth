@@ -69,64 +69,82 @@ class RealSenseCamera(CameraStreamer):
         self.aligned_frames = None
         self.align = None
         self.calibration = {}
+        self.is_calibrated = False
         
         # Create pipeline object once during initialization
+        # But don't try to start it yet
         if REALSENSE_AVAILABLE:
             self.pipeline = rs.pipeline()
             
-        # Try to load calibration
+        # Load calibration from file if available
+        self.load_calibration_from_file()
+            
+    def load_calibration_from_file(self):
+        """Load calibration data from file if available"""
         try:
-            if not self.pipeline:
-                print("RealSense library not available - skipping calibration")
-                return
+            import json
+            if os.path.exists("realsense_calibration.json"):
+                with open("realsense_calibration.json", "r") as f:
+                    calibration_data = json.load(f)
+                    intrinsics = calibration_data.get("intrinsics", {})
+                    
+                    self.calibration = {
+                        "fx": intrinsics.get("fx", 0),
+                        "fy": intrinsics.get("fy", 0),
+                        "cx": intrinsics.get("ppx", 0),
+                        "cy": intrinsics.get("ppy", 0)
+                    }
+                    self.is_calibrated = True
+                    print("Loaded calibration from file")
+        except Exception as e:
+            print(f"Error loading calibration file: {e}")
+            
+    def calibrate_camera(self):
+        """Calibrate the camera if connected - only called when actually streaming"""
+        if not REALSENSE_AVAILABLE or not self.pipeline or self.is_calibrated:
+            return
+            
+        try:
+            # We'll only do this if we're already streaming, using the active profile
+            if hasattr(self, 'profile') and self.profile:
+                color_profile = self.profile.get_stream(rs.stream.color).as_video_stream_profile()
+                intrinsics = color_profile.get_intrinsics()
                 
-            # Create a config object for calibration
-            config = rs.config()
-                     
-            # Enable streams
-            config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
-            config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
-            
-            # Start streaming temporarily for calibration
-            profile = self.pipeline.start(config)
-            color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
-            intrinsics = color_profile.get_intrinsics()
-            
-            # Get depth scale
-            depth_sensor = profile.get_device().first_depth_sensor()
-            self.depth_scale = depth_sensor.get_depth_scale()
-            print(f"Depth Scale: {self.depth_scale}")
-            
-            # Save to calibration file
-            calibration_data = {
-                "intrinsics": {
+                # Get depth scale
+                depth_sensor = self.profile.get_device().first_depth_sensor()
+                self.depth_scale = depth_sensor.get_depth_scale()
+                print(f"Depth Scale: {self.depth_scale}")
+                
+                # Save to calibration file
+                calibration_data = {
+                    "intrinsics": {
+                        "fx": intrinsics.fx,
+                        "fy": intrinsics.fy,
+                        "ppx": intrinsics.ppx,
+                        "ppy": intrinsics.ppy,
+                        "width": intrinsics.width,
+                        "height": intrinsics.height
+                    }
+                }
+                    
+                # Save to file
+                import json
+                with open("realsense_calibration.json", "w") as f:
+                    json.dump(calibration_data, f, indent=4)
+                
+                # Update calibration dict
+                self.calibration = {
                     "fx": intrinsics.fx,
                     "fy": intrinsics.fy,
-                    "ppx": intrinsics.ppx,
-                    "ppy": intrinsics.ppy,
-                    "width": intrinsics.width,
-                    "height": intrinsics.height
+                    "cx": intrinsics.ppx,
+                    "cy": intrinsics.ppy
                 }
-            }
-
-            # Stop streaming after calibration
-            self.pipeline.stop()
                 
-            # Save to file
-            import json
-            with open("realsense_calibration.json", "w") as f:
-                json.dump(calibration_data, f, indent=4)
-            
-            # Update calibration dict
-            self.calibration = {
-                "fx": intrinsics.fx,
-                "fy": intrinsics.fy,
-                "cx": intrinsics.ppx,
-                "cy": intrinsics.ppy
-            }
-                
+                self.is_calibrated = True
+                print("Camera calibrated successfully")
+                    
         except Exception as e:
-            print(f"Error saving calibration: {e}")
+            print(f"Error during camera calibration: {e}")
             
     def start(self):
         """Override start method to initialize RealSense camera first"""
@@ -136,7 +154,7 @@ class RealSenseCamera(CameraStreamer):
         return False
             
     def start_realsense(self):
-        """Initialize and start RealSense camera"""
+        """Initialize and start RealSense camera with timeout protection"""
         global depth_scale
         
         if not REALSENSE_AVAILABLE:
@@ -147,31 +165,79 @@ class RealSenseCamera(CameraStreamer):
             print("RealSense pipeline not initialized")
             return False
         
-        try:     
+        # Create a timeout to prevent hanging when no camera is connected
+        import time
+        
+        try:
             # Create a config object
             config = rs.config()  
             
+            # Try to check if devices are connected first to fail faster
+            ctx = rs.context()
+            devices = ctx.query_devices()
+            
+            if devices.size() == 0:
+                print("No RealSense devices detected")
+                return False
+                     
             # Enable streams
             config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
             config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
             
-            # Start streaming
-            profile = self.pipeline.start(config)
-            
-            # Get depth scale
-            depth_sensor = profile.get_device().first_depth_sensor()
-            self.depth_scale = depth_sensor.get_depth_scale()
-            depth_scale = self.depth_scale  # Update global for compatibility
-            print(f"Depth Scale: {self.depth_scale}")
-            
-            # Create align object
-            self.align = rs.align(rs.stream.color)    
-            print("RealSense camera started successfully")
-            return True
-            
+            # Start streaming with a timeout protection
+            try:
+                # Create a separate thread for the pipeline start to implement timeout
+                pipeline_started = False
+                start_error = None
+                
+                def start_pipeline_thread():
+                    nonlocal pipeline_started, start_error
+                    try:
+                        profile = self.pipeline.start(config)
+                        self.profile = profile
+                        pipeline_started = True
+                    except Exception as e:
+                        start_error = e
+                
+                # Start pipeline in separate thread
+                start_thread = threading.Thread(target=start_pipeline_thread)
+                start_thread.daemon = True
+                start_thread.start()
+                
+                # Wait for thread with timeout (2 seconds is usually enough)
+                start_time = time.time()
+                timeout = 2.0  # 2 seconds timeout
+                
+                while not pipeline_started and time.time() - start_time < timeout:
+                    time.sleep(0.1)
+                    if start_error:
+                        raise start_error
+                
+                if not pipeline_started:
+                    print("Timeout waiting for RealSense camera")
+                    return False
+                
+                # Create alignment object
+                self.align = rs.align(rs.stream.color)
+                
+                # Get depth scale
+                depth_sensor = self.profile.get_device().first_depth_sensor()
+                self.depth_scale = depth_sensor.get_depth_scale()
+                depth_scale = self.depth_scale  # Update global
+                
+                # Once we have a successful connection, attempt to calibrate
+                self.calibrate_camera()
+                
+                print(f"RealSense camera started: {self.width}x{self.height} @ {self.fps}fps")
+                return True
+                
+            except RuntimeError as e:
+                print(f"Error starting RealSense camera: {e}")
+                self.pipeline = None  # Reset pipeline to avoid further errors
+                return False
+                
         except Exception as e:
-            print(f"Error starting RealSense camera: {e}")
-            print(traceback.format_exc())
+            print(f"General error initializing RealSense: {e}")
             return False
     
     def stop_realsense(self):

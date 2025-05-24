@@ -1,19 +1,61 @@
 import cv2
 import numpy as np
-import torch
 import math
 import os
 import pyrealsense2 as rs
-from torchvision.models.detection import maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-from torchvision.transforms import functional as F
+import threading
+import time
 
 from wheel_measurements import calculate_real_dimensions, measure_wheel_height_from_depth
 from utils import fit_circle_least_squares
+from camera_utils import load_camera_intrinsics, project_point_to_3d, calculate_3d_distance
+
+# Flags for lazy loading
+_torch_dependencies_loaded = False
+_torch_loading_in_progress = False
+_model_loading_complete = threading.Event()
 
 # Global model variable
 wheel_detection_model = None
+
+# Lock for thread safety during lazy loading
+_import_lock = threading.Lock()
+
+# Queue for pending operations that require the model
+_pending_operations = []
+
+def load_torch_dependencies():
+    """Lazy load PyTorch and torchvision dependencies"""
+    global torch, F, maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights, FastRCNNPredictor, MaskRCNNPredictor
+    global _torch_dependencies_loaded, _torch_loading_in_progress
+    
+    with _import_lock:
+        if _torch_dependencies_loaded:
+            return True
+            
+        if _torch_loading_in_progress:
+            return False
+            
+        _torch_loading_in_progress = True
+        
+    print("Loading PyTorch and torchvision dependencies...")
+    try:
+        import torch
+        from torchvision.transforms import functional as F
+        from torchvision.models.detection import maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights
+        from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+        from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+        
+        with _import_lock:
+            _torch_dependencies_loaded = True
+            _torch_loading_in_progress = False
+        print("PyTorch dependencies loaded successfully")
+        return True
+    except Exception as e:
+        print(f"Error loading PyTorch dependencies: {e}")
+        with _import_lock:
+            _torch_loading_in_progress = False
+        return False
 
 def get_model_instance_segmentation(num_classes):
     """
@@ -25,6 +67,11 @@ def get_model_instance_segmentation(num_classes):
     Returns:
         model: PyTorch MaskRCNN model
     """
+    # Ensure PyTorch dependencies are loaded
+    if not load_torch_dependencies():
+        print("Cannot create model: PyTorch dependencies not loaded")
+        return None
+        
     # Load pre-trained model
     weights = MaskRCNN_ResNet50_FPN_Weights.DEFAULT
     model = maskrcnn_resnet50_fpn(weights=weights)
@@ -44,21 +91,30 @@ def get_model_instance_segmentation(num_classes):
     
     return model
 
-def load_model(device="cpu"):
+def load_model_in_background(device="cpu"):
     """
-    Load the wheel detection model
+    Start loading the model in a background thread to avoid blocking the UI
     
     Args:
         device (str): Device to run the model on (cpu/cuda)
-        
-    Returns:
-        model: PyTorch model
     """
-    global wheel_detection_model
+    global wheel_detection_model, _model_loading_complete
     
-    if wheel_detection_model is None:
+    # Reset the event to indicate loading is in progress
+    _model_loading_complete.clear()
+    
+    def _load_model_thread():
+        global wheel_detection_model, _model_loading_complete
+        
+        # Ensure PyTorch dependencies are loaded first
+        if not load_torch_dependencies():
+            print("Cannot load model: PyTorch dependencies failed to load")
+            _model_loading_complete.set()  # Signal that we're done trying
+            return
+            
         try:
             # Initialize model
+            print("Initializing wheel detection model...")
             model = get_model_instance_segmentation(num_classes=2)  # Background and wheel
             
             # Load weights if available
@@ -72,11 +128,61 @@ def load_model(device="cpu"):
             # Set model to evaluation mode
             model.eval()
             wheel_detection_model = model
+            print("Model loaded and ready for inference")
         except Exception as e:
             print(f"Error loading model: {e}")
-            return None
+        
+        # Signal that loading is complete (successful or not)
+        _model_loading_complete.set()
+        
+        # Process any pending operations that were queued while loading
+        process_pending_operations()
+    
+    # Start loading in background thread
+    threading.Thread(target=_load_model_thread, daemon=True).start()
+
+def load_model(device="cpu", wait=False, timeout=None):
+    """
+    Load the wheel detection model or return the already loaded model
+    
+    Args:
+        device (str): Device to run the model on (cpu/cuda)
+        wait (bool): Whether to wait for model loading to complete
+        timeout (float): Maximum time to wait in seconds, or None for no timeout
+        
+    Returns:
+        model: PyTorch model or None if not loaded yet
+    """
+    global wheel_detection_model
+    
+    # If model is already loaded, return it
+    if wheel_detection_model is not None:
+        return wheel_detection_model
+    
+    # If the loading is not started yet, start it
+    if not _model_loading_complete.is_set() and not _torch_loading_in_progress:
+        load_model_in_background(device)
+    
+    # If wait is requested, wait for loading to complete
+    if wait:
+        _model_loading_complete.wait(timeout=timeout)
     
     return wheel_detection_model
+
+def process_pending_operations():
+    """Process any operations that were queued while the model was loading"""
+    global _pending_operations
+    
+    # Process all pending operations
+    while _pending_operations:
+        operation = _pending_operations.pop(0)
+        try:
+            operation()
+        except Exception as e:
+            print(f"Error processing pending operation: {e}")
+    
+    print(f"Processed {len(_pending_operations)} pending operations")
+    _pending_operations.clear()
 
 def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=None, selected_model=None, wheel_height_mm=None):
     """
@@ -101,67 +207,100 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
     # Make a copy to avoid modifying the original
     visual_frame = frame.copy()
     
-    # Load model if not already loaded
-    model = load_model()
-    if model is None:
-        # If model fails to load, fallback to basic OpenCV processing
-        return fallback_processing(frame, is_top_view, camera_settings)
+    # Check if model is loaded or being loaded
+    model = load_model(wait=False)
     
-    try:
-        # Prepare image for model
-        image = frame.copy()
+    # If model isn't loaded yet and loading hasn't started, start loading in background
+    if model is None and not _model_loading_complete.is_set() and not _torch_loading_in_progress:
+        load_model_in_background()
+        # Use fallback processing while model is loading
+        processed_img, measurements = fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
         
-        # Convert to RGB for PyTorch model (which expects RGB)
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Convert to PyTorch tensor
-        image_tensor = F.to_tensor(image_rgb)
-        
-        # Make sure dimensions are NCHW (batch, channels, height, width)
-        if len(image_tensor.shape) == 3:
-            image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
-        
-        # Run inference
-        with torch.no_grad():
-            predictions = model(image_tensor)
-        
-        # Process predictions
-        if len(predictions) > 0 and len(predictions[0]['boxes']) > 0:
-            # Get the prediction with highest score
-            scores = predictions[0]['scores'].cpu().numpy()
-            high_scores_idxs = np.where(scores > 0.7)[0].tolist()
+        # Add a loading indicator to the processed image
+        cv2.putText(processed_img, "AI model loading...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        return processed_img, measurements
+    
+    # If model is loaded, use it for processing
+    elif model is not None:
+        try:
+            # Make sure PyTorch dependencies are loaded
+            if not load_torch_dependencies():
+                return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
             
-            if len(high_scores_idxs) > 0:
-                # Use the highest scoring prediction
-                idx = high_scores_idxs[0]
+            # Prepare image for model
+            image = frame.copy()
+            
+            # Convert to RGB for PyTorch model (which expects RGB)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Convert to PyTorch tensor
+            image_tensor = F.to_tensor(image_rgb)
+            
+            # Make sure dimensions are NCHW (batch, channels, height, width)
+            if len(image_tensor.shape) == 3:
+                image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
+            
+            # Run inference
+            with torch.no_grad():
+                predictions = model(image_tensor)
+            
+            # Process predictions
+            if len(predictions) > 0 and len(predictions[0]['boxes']) > 0:
+                # Get the prediction with highest score
+                scores = predictions[0]['scores'].cpu().numpy()
+                high_scores_idxs = np.where(scores > 0.7)[0].tolist()
                 
-                # Get bounding box
-                box = predictions[0]['boxes'][idx].cpu().numpy().astype(np.int32)
-                x1, y1, x2, y2 = box
-                x, y, w, h = x1, y1, x2-x1, y2-y1
-                
-                # Get mask
-                mask = predictions[0]['masks'][idx, 0].cpu().numpy()
-                mask = (mask > 0.5).astype(np.uint8) * 255
-                
-                # Different processing based on view
-                if is_top_view:
-                    # For top view, find the circle diameter using wheel height from side view
-                    processed_img, measurements = process_top_view(
-                        visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model, wheel_height_mm
-                    )
-                else:
-                    # For side view, calculate height from depth or conventional methods
-                    processed_img, measurements = process_side_view(
-                        visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model
-                    )
-                
-                return processed_img, measurements
+                if len(high_scores_idxs) > 0:
+                    # Use the highest scoring prediction
+                    idx = high_scores_idxs[0]
+                    
+                    # Get bounding box
+                    box = predictions[0]['boxes'][idx].cpu().numpy().astype(np.int32)
+                    x1, y1, x2, y2 = box
+                    x, y, w, h = x1, y1, x2-x1, y2-y1
+                    
+                    # Get mask
+                    mask = predictions[0]['masks'][idx, 0].cpu().numpy()
+                    mask = (mask > 0.5).astype(np.uint8) * 255
+                    
+                    # Different processing based on view
+                    if is_top_view:
+                        # For top view, find the circle diameter using wheel height from side view
+                        processed_img, measurements = process_top_view(
+                            visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model, wheel_height_mm
+                        )
+                    else:
+                        # For side view, calculate height from depth or conventional methods
+                        processed_img, measurements = process_side_view(
+                            visual_frame, mask, (x, y, w, h), camera_settings, wheel_models, selected_model
+                        )
+                    
+                    return processed_img, measurements
+        
+        except Exception as e:
+            print(f"Error processing frame: {e}")
     
-    except Exception as e:
-        print(f"Error processing frame: {e}")
+    # If model is still loading or processing failed, use fallback
+    elif not _model_loading_complete.is_set():
+        # Add to queue of pending operations if 24V signal triggered this
+        def process_when_ready():
+            # This will be called when model is loaded
+            result = process_frame(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
+            # We'd need a callback mechanism to handle the result
+            print("Processing completed for queued frame")
+            return result
+            
+        # Add to pending operations queue
+        _pending_operations.append(process_when_ready)
+        
+        # Use fallback processing while model is loading
+        processed_img, measurements = fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
+        
+        # Add a loading indicator to the processed image
+        cv2.putText(processed_img, "AI model loading... Please wait", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        return processed_img, measurements
     
-    # Fallback to basic processing if model fails
+    # Fallback to basic processing if all else fails
     return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm)
 
 def fallback_processing(frame, is_top_view, camera_settings, wheel_models=None, selected_model=None, wheel_height_mm=None):
@@ -348,37 +487,48 @@ def process_top_view(frame, mask, box, camera_settings, wheel_models, selected_m
                 measurements["circle_center"] = (cx, cy)
                 measurements["radius_pixels"] = radius
                 
-                # Calculate diameter using camera parameters and wheel height
+                # Calculate diameter using camera intrinsic matrix and proper projection
                 if camera_settings:
-                    # Extract camera parameters
-                    focal_length = camera_settings.get("focal_length", 1000.0)  # Default if not available
+                    # Load camera intrinsics from file
+                    intrinsics = load_camera_intrinsics("top_camera")
+                    camera_matrix = intrinsics["camera_matrix"]
+                    
+                    # Get workbench distance (height from camera to base)
                     cam_height = camera_settings.get("base_height", 440.0)  # Camera height from base in mm
                     
-                    # Get image dimensions
-                    img_height, img_width = frame.shape[:2]
-                    
-                    # Get principal point (center of image if not specified)
-                    ppx = camera_settings.get("ppx", img_width / 2)
-                    ppy = camera_settings.get("ppy", img_height / 2)
-                    
                     # Calculate the distance from camera to wheel top surface
-                    # (camera height minus wheel height)
+                    # (workbench distance minus wheel height)
                     distance_to_wheel = cam_height - wheel_height_mm
                     
-                    # Ensure we don't divide by zero
+                    # Ensure we don't divide by zero or have negative distance
                     if distance_to_wheel <= 0:
                         distance_to_wheel = cam_height
                         print(f"Warning: Invalid distance to wheel ({distance_to_wheel}), using camera height")
                     
-                    # Calculate real-world diameter using perspective formula:
-                    # real_diameter = (pixel_diameter * distance) / focal_length
-                    diameter_pixels = radius * 2  # Diameter in pixels
-                    diameter_mm = (diameter_pixels * distance_to_wheel) / focal_length
+                    # Store the distance for reference
+                    measurements["distance_to_wheel"] = distance_to_wheel
+                    
+                    # Project center point to 3D space
+                    center_point_2d = (cx, cy)
+                    center_point_3d = project_point_to_3d(center_point_2d, distance_to_wheel, camera_matrix)
+                    
+                    # Project a point on the circumference to 3D space
+                    # We'll use the fitted circle's radius to find a point on the circumference
+                    circumference_point_2d = (cx + radius, cy)  # Point at 0 degrees on circle
+                    circumference_point_3d = project_point_to_3d(circumference_point_2d, distance_to_wheel, camera_matrix)
+                    
+                    # Calculate Euclidean distance in 3D space
+                    radius_mm = calculate_3d_distance(center_point_3d, circumference_point_3d)
+                    diameter_mm = radius_mm * 2
                     
                     # Store the results
+                    measurements["radius_mm"] = radius_mm
                     measurements["diameter_mm"] = diameter_mm
-                    measurements["distance_to_wheel"] = distance_to_wheel
-                    measurements["focal_length"] = focal_length
+                    measurements["camera_matrix"] = camera_matrix.tolist()
+                    
+                    # Store the pixel measurements for reference
+                    measurements["radius_pixels"] = radius
+                    measurements["diameter_pixels"] = radius * 2
                     
                     # Just store reference to model data without tolerance checks
                     if wheel_models and selected_model and selected_model in wheel_models:

@@ -22,6 +22,8 @@ captures/
 screenshots/
 wheel_measurements/
 Final/maskrcnn_wheel_best.pth
+MobileNetSSD_deploy.prototxt
+MobileNetSSD_deploy.caffemodel
 
 # JSON calibration files
 intrinsics_*.json

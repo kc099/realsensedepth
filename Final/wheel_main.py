@@ -5,19 +5,17 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import threading
 import numpy as np
-import torch
-from PIL import Image, ImageTk
 import math
 import traceback
 from datetime import datetime
 import sqlite3
 import queue
-import traceback
+from PIL import Image, ImageTk  # Still needed for UI image handling
 
 # Import from modular files
 from utils import update_display, update_panel_image, update_clock
 from camera_streams import RealSenseCamera, IPCamera, USBCamera, current_depth_image, frame_queue
-from image_processing import process_frame
+from image_processing import process_frame, load_model_in_background
 from wheel_measurements import classify_wheel_model
 from settings_manager import load_settings, save_settings, load_realsense_calibration
 from signal_handler import SignalHandler
@@ -231,9 +229,10 @@ def take_photo():
     measurements_top = {}
     status_label_main.config(text="Processing: Calculating wheel diameter using height data...")
     processed_top, measurements_top = process_frame(frame_top, is_top_view=True,
-                                                  camera_settings=current_settings["calibration"],
-                                                  wheel_models=WHEEL_MODELS,
-                                                  selected_model=current_settings["selected_model"])
+                                                   camera_settings=current_settings["calibration"],
+                                                   wheel_models=WHEEL_MODELS,
+                                                   selected_model=current_settings["selected_model"],
+                                                   wheel_height_mm=side_measured_height)
     
     # Display processed top view
     if camera_scenario == "both" or camera_scenario == "top_only":
@@ -1068,6 +1067,18 @@ def main():
     signal_handler = SignalHandler(signal_callback=signal_handler_callback)
     signal_handler.start_detection()
     print("Modbus frame detection started - waiting for signals...")
+    
+    # Start loading the AI model in the background after UI is shown
+    # This prevents blocking the UI during startup
+    def delayed_model_loading():
+        # Wait 2 seconds to ensure UI is responsive first
+        time.sleep(2)
+        print("Starting AI model loading in background...")
+        # This will initiate the loading process in a background thread
+        load_model_in_background()
+    
+    # Start model loading in a separate thread to avoid blocking UI
+    threading.Thread(target=delayed_model_loading, daemon=True).start()
     
     # Start the mainloop
     root.mainloop()
