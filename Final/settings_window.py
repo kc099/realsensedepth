@@ -3,6 +3,7 @@ from tkinter import ttk, simpledialog, messagebox
 import json
 from datetime import datetime
 import sqlite3
+import os
 
 # Import app icon module
 try:
@@ -149,22 +150,76 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
     refresh_history()
     
     # Camera Settings
-    camera_frame = ttk.LabelFrame(user_frame, text="Camera Set")
+    camera_frame = ttk.LabelFrame(user_frame, text="Camera Settings")
     camera_frame.pack(fill=tk.X, padx=10, pady=10)
     
     # Configure grid weights for better layout
     camera_frame.grid_columnconfigure(1, weight=1)
     
-    ttk.Label(camera_frame, text="Top Camera URL:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    # Add COM Port Selection
+    ttk.Label(camera_frame, text="COM Port:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    com_port_combo = ttk.Combobox(camera_frame, state="readonly", width=20)
+    com_port_combo.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+    
+    # Add Baud Rate Selection
+    ttk.Label(camera_frame, text="Baud Rate:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+    baud_rate_combo = ttk.Combobox(camera_frame, state="readonly", width=10)
+    baud_rate_combo['values'] = ['9600', '19200', '38400', '57600', '115200']
+    baud_rate_combo.grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+    # Set default or current value
+    baud_rate_combo.set(str(current_settings.get("baud_rate", "19200")))
+    
+    def refresh_com_ports():
+        try:
+            import serial.tools.list_ports
+            ports = [port.device for port in serial.tools.list_ports.comports()]
+            com_port_combo['values'] = ports
+            # Set current value if it exists in settings
+            if "com_port" in current_settings and current_settings["com_port"] in ports:
+                com_port_combo.set(current_settings["com_port"])
+            elif ports:
+                com_port_combo.set(ports[0])
+        except ImportError:
+            com_port_combo['values'] = ["Serial port not available"]
+            com_port_combo.set("Serial port not available")
+    
+    # Add refresh button for COM ports
+    refresh_com_button = ttk.Button(camera_frame, text="Refresh", command=refresh_com_ports)
+    refresh_com_button.grid(row=0, column=4, padx=5, pady=5)
+    
+    # Initial COM port refresh
+    refresh_com_ports()
+    
+    # Add Modbus Slave ID setting
+    ttk.Label(camera_frame, text="Modbus Slave ID:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+    slave_id_var = tk.StringVar(value=str(current_settings.get("modbus_slave_id", "1")))
+    slave_id_entry = ttk.Entry(camera_frame, textvariable=slave_id_var, width=10)
+    slave_id_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+    
+    # Add validation for slave ID entry
+    def validate_slave_id(*args):
+        try:
+            value = slave_id_var.get()
+            if value:  # Only validate if there's a value
+                num = int(value)
+                if not (1 <= num <= 247):
+                    slave_id_var.set("1")  # Reset to default if invalid
+        except ValueError:
+            slave_id_var.set("1")  # Reset to default if not a number
+    
+    # Add trace to validate slave ID as user types
+    slave_id_var.trace_add("write", validate_slave_id)
+    
+    ttk.Label(camera_frame, text="Top Camera URL:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
     top_url_entry = ttk.Entry(camera_frame, width=50)
-    top_url_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+    top_url_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
     top_url_entry.delete(0, tk.END)
     top_url_entry.insert(0, current_settings["top_camera_url"])
     top_url_entry.config(state='readonly')  # Make readonly after inserting
     
-    ttk.Label(camera_frame, text="Side Camera URL:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(camera_frame, text="Side Camera URL:").grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
     side_url_entry = ttk.Entry(camera_frame, width=50)
-    side_url_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
+    side_url_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W+tk.E)
     side_url_entry.delete(0, tk.END)
     side_url_entry.insert(0, current_settings["side_camera_url"])
     side_url_entry.config(state='readonly')  # Make readonly after inserting
@@ -195,11 +250,11 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
         messagebox.showinfo("Success", "Camera URLs saved successfully")
     
     edit_camera_button = ttk.Button(camera_frame, text="Edit URLs", command=edit_camera_urls)
-    edit_camera_button.grid(row=0, column=2, rowspan=2, padx=5, pady=5, sticky=tk.NS)
+    edit_camera_button.grid(row=2, column=4, rowspan=2, padx=5, pady=5, sticky=tk.NS)
     
-    ttk.Label(camera_frame, text="Capture Interval (s):").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+    ttk.Label(camera_frame, text="Capture Interval (s):").grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
     interval_entry = ttk.Entry(camera_frame, width=10)
-    interval_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+    interval_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
     # Safely retrieve capture_interval with a default of 5 seconds
     capture_interval = current_settings.get("capture_interval", 5)
     interval_entry.insert(0, str(capture_interval))
@@ -478,12 +533,36 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
     def save_user_settings():
         """Save only user-accessible settings."""
         try:
+            # Save capture interval
             current_settings["capture_interval"] = float(interval_entry.get())
             
-            # Save to file
-            with open("settings.json", "w") as f:
-                json.dump(current_settings, f, indent=4)
-                
+            # Save COM port and baud rate settings
+            selected_port = com_port_combo.get()
+            if selected_port and selected_port != "Serial port not available":
+                print(f"Saving COM port: {selected_port}")  # Debug print
+                current_settings["com_port"] = selected_port
+                current_settings["baud_rate"] = int(baud_rate_combo.get())
+            else:
+                print("No valid COM port selected")  # Debug print
+                messagebox.showwarning("Warning", "No COM port selected. Signal detection will not be available.")
+            
+            # Save Modbus slave ID with validation
+            try:
+                slave_id = int(slave_id_var.get())
+                if 1 <= slave_id <= 247:  # Valid Modbus slave ID range
+                    current_settings["modbus_slave_id"] = slave_id
+                    print(f"Saving Modbus slave ID: {slave_id}")  # Debug print
+                else:
+                    raise ValueError("Slave ID must be between 1 and 247")
+            except ValueError as e:
+                messagebox.showerror("Error", f"Invalid Modbus Slave ID: {str(e)}")
+                return
+            
+            # Save to file using settings_manager
+            from settings_manager import save_settings
+            save_settings(current_settings, WHEEL_MODELS)
+            
+            print(f"Settings saved with COM port: {current_settings.get('com_port')}")  # Debug print
             messagebox.showinfo("Settings Saved", "User settings have been saved successfully.")
             
             # Update model parameters in main window
@@ -492,8 +571,8 @@ def show_settings_window(root, current_settings, WHEEL_MODELS, update_model_para
             # Ensure settings window stays on top
             settings_window.lift()
             settings_window.focus_force()
-        except ValueError:
-            messagebox.showerror("Error", "Please enter a valid number for capture interval")
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid settings value: {str(e)}")
     
     save_user_button = ttk.Button(user_frame, text="Save User Settings", command=save_user_settings)
     save_user_button.pack(pady=10)

@@ -9,6 +9,9 @@ DEFAULT_SETTINGS = {
     "auto_capture_interval": 5,
     "top_camera_url": "tcp://192.168.100.50:8080",  # Event camera for top view
     "side_camera_url": "tcp://192.168.100.51:8080",  # Event camera for side view (different IP)
+    "com_port": None,  # Will be auto-detected if available
+    "baud_rate": 19200,  # Default baud rate
+    "modbus_slave_id": 1,  # Default slave ID
     "calibration": {
         "ref_diameter": 466.0,  # Reference diameter in mm
         "ref_diameter_pixels": 632.62,  # Corresponding pixels in image

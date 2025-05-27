@@ -7,6 +7,7 @@ import traceback
 import os
 from utils import resize_with_aspect_ratio, update_display
 
+
 # Try importing RealSense library
 try:
     import pyrealsense2 as rs
@@ -17,6 +18,8 @@ except ImportError:
     print("RealSense library not found - depth camera functionality will be limited")
 
 # Global variables for stream control
+
+pipeline = None
 frame_queue = queue.Queue(maxsize=10)
 current_depth_image = None
 depth_scale = 0.001  # Default scale, will be updated when starting RealSense

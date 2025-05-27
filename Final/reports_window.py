@@ -39,37 +39,6 @@ def show_report_window(root):
     end_date = DateEntry(date_frame)
     end_date.pack(side=tk.LEFT, padx=5)
     
-    # Create TreeView for report data
-    report_frame = ttk.Frame(report_window)
-    report_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-    
-    # Scrollbar
-    scrollbar = ttk.Scrollbar(report_frame)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    
-    # Create TreeView with scrollbar
-    columns = ("ID", "Part No", "Model", "Date", "Diameter (mm)", "Height (mm)")
-    report_tree = ttk.Treeview(report_frame, columns=columns, show="headings", height=20)
-    report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    
-    # Configure scrollbar
-    scrollbar.config(command=report_tree.yview)
-    report_tree.config(yscrollcommand=scrollbar.set)
-    
-    # Set column headings
-    for col in columns:
-        report_tree.heading(col, text=col)
-        report_tree.column(col, width=100)
-    
-    # Now create buttons with correct references to the report_tree
-    generate_button = ttk.Button(date_frame, text="Generate Report", 
-                               command=lambda: generate_report(start_date.get(), end_date.get(), report_tree))
-    generate_button.pack(side=tk.LEFT, padx=10)
-    
-    export_button = ttk.Button(date_frame, text="Export to Excel", 
-                             command=lambda: export_to_excel(start_date.get(), end_date.get()))
-    export_button.pack(side=tk.LEFT, padx=5)
-    
     # Statistics frame
     stats_frame = ttk.LabelFrame(report_window, text="Statistics")
     stats_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -83,24 +52,27 @@ def show_report_window(root):
     
     ttk.Label(daily_stats_frame, text=f"Total: {total_count}").pack()
     
-    # Display model-specific counts instead of OK/NOK counts
+    # Display model-specific counts
     for model, count in model_counts:
         ttk.Label(daily_stats_frame, text=f"{model}: {count}").pack()
     
     monthly_stats_frame = ttk.Frame(stats_frame)
     monthly_stats_frame.pack(side=tk.LEFT, padx=10, pady=5)
     
-    ttk.Label(monthly_stats_frame, text="Monthly Count").pack()
-    current_month = datetime.now().strftime("%Y-%m")
-    total_count, model_counts = get_monthly_report(current_month[:4], current_month[5:7])
+    # Get current month name
+    current_month = datetime.now().strftime("%B")  # This will give full month name (e.g., "May")
+    ttk.Label(monthly_stats_frame, text=f"{current_month} Count").pack()
+    
+    current_month_date = datetime.now().strftime("%Y-%m")
+    total_count, model_counts = get_monthly_report(current_month_date[:4], current_month_date[5:7])
     
     ttk.Label(monthly_stats_frame, text=f"Total: {total_count}").pack()
     
-    # Display model-specific counts instead of OK/NOK counts
+    # Display model-specific counts
     for model, count in model_counts:
         ttk.Label(monthly_stats_frame, text=f"{model}: {count}").pack()
     
-    # Report treeview
+    # Report treeview (single instance)
     report_tree_frame = ttk.Frame(report_window)
     report_tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
     
@@ -130,9 +102,19 @@ def show_report_window(root):
     report_tree.pack(fill=tk.BOTH, expand=True)
     scrollbar.config(command=report_tree.yview)
     
+    # Add buttons to date frame
+    generate_button = ttk.Button(date_frame, text="Generate Report", 
+                               command=lambda: generate_report(start_date.get(), end_date.get(), report_tree))
+    generate_button.pack(side=tk.LEFT, padx=10)
+    
+    export_button = ttk.Button(date_frame, text="Export to Excel", 
+                             command=lambda: export_to_excel(start_date.get(), end_date.get()))
+    export_button.pack(side=tk.LEFT, padx=5)
+    
     # Load initial data (today's report)
     generate_report(today, today, report_tree)
     return report_window
+
 def generate_report(start_date, end_date, report_tree):
     """Generate and display report for the selected date range."""
     model_counts, inspections = get_date_range_report(start_date, end_date)

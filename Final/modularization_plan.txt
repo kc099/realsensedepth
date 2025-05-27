@@ -44,3 +44,13 @@
    
 10. settings_window.py (already exists)
     - Settings interface
+
+ ##the file wheel_main.py is an application that can measure dimensions of an object using real sense camera and standard perspective 
+## projection principles. the side camera is realsense and calculates depth and distance between two points on a 
+## detected segment of an object. The top camera should use standard perspective projection. the heigh to the base is 
+## constant and side height is calculated by realsense, the top camera is just an event camera takes RGB image, uses intriscic
+ ## calibrated matrix and depth calculated as base distance - sideheight. and projects points into camera space and calulated 
+##  euclidena distance between center and a point on circumference on detected circle. This must be the calculation logic. 
+##  all of this is triggered upon receving a frame from serial which is named as 24V signal. go through the code and identify
+##   discrepencies with this logic in the implementation. especially want to look at athe computation logic of dimension
+##    calculation of top camera. help me understand the discrepancies 

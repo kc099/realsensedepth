@@ -19,7 +19,7 @@ from image_processing import process_frame, load_model_in_background
 from wheel_measurements import classify_wheel_model
 from settings_manager import load_settings, save_settings, load_realsense_calibration
 from signal_handler import SignalHandler
-from database import init_db, add_inspection
+from database import init_db, add_inspection, get_daily_report, get_monthly_report, get_date_range_report
 from reports_window import show_report_window
 from settings_window import show_settings_window
 from app_icon import set_app_icon
@@ -56,6 +56,7 @@ reports_win = None
 wheel_model_counts = {}
 model_count_vars = {}  # Will hold StringVar for each model count
 current_model_display = None  # Will hold the StringVar for current model in result frame
+count_frame = None  # Add count_frame to global variables
 
 # Panel size constants
 SIDE_PANEL_WIDTH = 640
@@ -296,8 +297,9 @@ def take_photo():
         filename_side if filename_side else ''
     )
     
-    # Update wheel counts
+    # Update wheel counts and count frame
     update_wheel_counts()
+    update_count_frame()
     
     # Send measurement data via modbus frame after processing
     if signal_handler:
@@ -725,6 +727,65 @@ def signal_handler_callback(signal_type=""):
         # Wait 2 seconds for cameras to initialize
         root.after(2000, delayed_photo_and_stop)
 
+def update_count_frame():
+    """Update the count frame with latest daily and monthly counts"""
+    global count_frame
+    
+    if count_frame is None:
+        print("Count frame not initialized")
+        return
+        
+    # Get today's date and current month
+    today = datetime.now().strftime("%Y-%m-%d")
+    current_month = datetime.now().strftime("%B")  # Full month name (e.g., "May")
+    
+    # Clear existing widgets in count frame
+    for widget in count_frame.winfo_children():
+        widget.destroy()
+    
+    # Configure grid for two columns
+    count_frame.columnconfigure(0, weight=1)  # Daily report column
+    count_frame.columnconfigure(1, weight=0)  # Separator column
+    count_frame.columnconfigure(2, weight=1)  # Monthly report column
+    
+    # Create frames for daily and monthly reports
+    daily_frame = ttk.Frame(count_frame)
+    daily_frame.grid(row=0, column=0, sticky="nsew", padx=(5, 0), pady=5)
+    
+    monthly_frame = ttk.Frame(count_frame)
+    monthly_frame.grid(row=0, column=2, sticky="nsew", padx=(0, 5), pady=5)
+    
+    # Add vertical separator
+    separator = ttk.Separator(count_frame, orient='vertical')
+    separator.grid(row=0, column=1, sticky='ns', padx=5, pady=5)
+    
+    # Get today's counts
+    today_total, today_model_counts, _ = get_daily_report(today)
+    ttk.Label(daily_frame, text="Today's Count:", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, sticky="w", pady=5)
+    ttk.Label(daily_frame, text=str(today_total), font=('Helvetica', 12, 'bold')).grid(row=0, column=1, sticky="w", pady=5)
+    
+    # Display today's model counts
+    row = 1
+    for model, count in today_model_counts:
+        ttk.Label(daily_frame, text=f"{model}:", font=('Helvetica', 11)).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(daily_frame, text=str(count), font=('Helvetica', 11)).grid(row=row, column=1, sticky="w", pady=2)
+        row += 1
+    
+    # Get current month's counts
+    current_month_date = datetime.now().strftime("%Y-%m")
+    month_total, month_model_counts = get_monthly_report(current_month_date[:4], current_month_date[5:7])
+    
+    # Display current month's total
+    ttk.Label(monthly_frame, text=f"{current_month} Count:", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, sticky="w", pady=5)
+    ttk.Label(monthly_frame, text=str(month_total), font=('Helvetica', 12, 'bold')).grid(row=0, column=1, sticky="w", pady=5)
+    
+    # Display current month's model counts
+    row = 1
+    for model, count in month_model_counts:
+        ttk.Label(monthly_frame, text=f"{model}:", font=('Helvetica', 11)).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(monthly_frame, text=str(count), font=('Helvetica', 11)).grid(row=row, column=1, sticky="w", pady=2)
+        row += 1
+
 # Main function to create UI and start application
 def main():
     global root, side_panel, top_panel, side_processed_panel, top_processed_panel
@@ -735,7 +796,7 @@ def main():
     global measured_dia_var, measured_height_var, result_status_var
     global top_result_text, side_result_text
     global total_count_var, passed_count_var, faulty_count_var
-    global result_status_label
+    global result_status_label, count_frame  # Add count_frame to global declaration
     
     # Initialize global variables
     init_globals()
@@ -961,15 +1022,8 @@ def main():
     count_frame = ttk.LabelFrame(info_frame, text="Wheel Count by Model", style="Info.TLabelframe")
     count_frame.grid(row=0, column=2, sticky="nsew", padx=(5, 10), pady=5)
     
-    ttk.Label(count_frame, text="Total:", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, sticky="w", padx=5, pady=5)
-    ttk.Label(count_frame, textvariable=total_count_var, font=('Helvetica', 12, 'bold')).grid(row=0, column=1, sticky="w", padx=5, pady=5)
-    
-    # Add each model as a row in the count frame
-    row = 1
-    for model_name in sorted(WHEEL_MODELS.keys()):
-        ttk.Label(count_frame, text=f"{model_name}:", font=('Helvetica', 11)).grid(row=row, column=0, sticky="w", padx=5, pady=2)
-        ttk.Label(count_frame, textvariable=model_count_vars[model_name], font=('Helvetica', 11)).grid(row=row, column=1, sticky="w", padx=5, pady=2)
-        row += 1
+    # Initial update of count frame
+    update_count_frame()
     
     # Camera views
     camera_frame = ttk.Frame(main_frame)
