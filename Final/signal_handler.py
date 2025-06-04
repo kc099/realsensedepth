@@ -3,6 +3,7 @@ import time
 import traceback
 import json
 
+
 # Try importing pyserial
 try:
     import serial
@@ -80,22 +81,15 @@ class SignalHandler:
         if not com_port:
             try:
                 available_ports = [port.device for port in serial.tools.list_ports.comports()]
-                if available_ports:
-                    com_port = available_ports[0]  # Use the first available port
+                for port in available_ports:
+                    if "Arduino" in port.description or 'USB' in port.description:
+                        com_port = port
+                    # com_port = available_ports[0]  # Use the first available port
                     print(f"Auto-detected COM port: {com_port}")
                     # Update settings with the detected port
                     self.settings["com_port"] = com_port
                     # Save the updated settings
-                    try:
-                        with open("settings.json", "r") as f:
-                            data = json.load(f)
-                        if "settings" in data:
-                            data["settings"]["com_port"] = com_port
-                            with open("settings.json", "w") as f:
-                                json.dump(data, f, indent=4)
-                            print(f"Updated settings.json with auto-detected COM port: {com_port}")
-                    except Exception as e:
-                        print(f"Error saving auto-detected COM port: {e}")
+                    
                 else:
                     print("No COM ports available")
                     return False
@@ -443,60 +437,3 @@ class SignalHandler:
                 else:
                     crc >>= 1
         return crc
-
-def signal_handler_callback(signal_type=""):
-    """Handle modbus frame with complete measurement cycle"""
-    global streaming_active, signal_handler
-    
-    if signal_type == "MODBUS_FRAME":
-        # Check if we're already processing a signal
-        if signal_handler.is_processing_signal:
-            print("Already processing a modbus frame - ignoring new signal")
-            return
-            
-        print("Processing modbus frame: Starting measurement cycle")
-        signal_handler.is_processing_signal = True  # Set processing flag
-        
-        def cleanup_processing():
-            """Cleanup function to reset processing state"""
-            signal_handler.is_processing_signal = False
-            print("Measurement cycle completed - ready for next signal")
-        
-        # If already streaming, just take a photo
-        if streaming_active:
-            try:
-                # Take photo and cleanup after processing
-                root.after(0, lambda: [take_photo(), root.after(1000, cleanup_processing)])
-            except Exception as e:
-                print(f"Error in signal processing: {e}")
-                cleanup_processing()
-            return
-        
-        # Start the streaming to initialize cameras
-        root.after(0, start_streaming)
-        
-        # Wait for cameras to initialize (2 second delay)
-        def delayed_photo_and_stop():
-            try:
-                # Take photo to process
-                take_photo()
-                
-                # Wait for processing to complete before stopping
-                def delayed_stop():
-                    try:
-                        # Only stop streaming when done
-                        stop_streaming_func()
-                        # Reset processing flag after everything is done
-                        cleanup_processing()
-                    except Exception as e:
-                        print(f"Error in delayed stop: {e}")
-                        cleanup_processing()
-                
-                # Give 1 second for processing to complete
-                root.after(1000, delayed_stop)
-            except Exception as e:
-                print(f"Error in delayed photo: {e}")
-                cleanup_processing()
-        
-        # Wait 2 seconds for cameras to initialize
-        root.after(2000, delayed_photo_and_stop)
