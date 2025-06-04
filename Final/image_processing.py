@@ -25,7 +25,8 @@ from camera_utils import load_camera_intrinsics, project_point_to_3d, calculate_
 
 # Configuration
 MODEL_PATH = "./maskrcnn_wheel_best.pth"
-SCORE_THRESHOLD = 0.5
+SCORE_THRESHOLD = 0.85
+SCORE_THRESHOLD1 = 0.5 #dont delete this
 RATIO_THRESHOLD = 0.7
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu') if TORCH_AVAILABLE else None
 
@@ -188,8 +189,8 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
         wheel_detection_model = load_model()
         
         if wheel_detection_model is None:
-            print("Failed to load model - using fallback processing")
-            return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm, depth_frame)
+            print("Failed to load model - cannot process frame")
+            return None
     
     try:
         print("Converting frame for model input...")
@@ -226,8 +227,8 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
         print(f"Valid detections (confidence > {SCORE_THRESHOLD}): {np.sum(valid_detections)}")
         
         if not np.any(valid_detections):
-            print("No wheel detected with sufficient confidence - using fallback processing")
-            return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm, depth_frame)
+            print("No wheel detected with sufficient confidence - processing failed")
+            return None
         
         # Get the best detection
         best_idx = np.argmax(scores[valid_detections])
@@ -250,58 +251,6 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
             
     except Exception as e:
         print(f"Error processing frame with model: {e}")
-        traceback.print_exc()
-        print("Falling back to basic processing...")
-        return fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm, depth_frame)
-
-def fallback_processing(frame, is_top_view, camera_settings, wheel_models, selected_model, wheel_height_mm, depth_frame):
-    """
-    Fallback processing when MaskRCNN model is not available or fails
-    Uses basic image processing techniques to estimate wheel boundaries
-    """
-    print("Using fallback processing (no AI model)")
-    
-    try:
-        # Convert to grayscale for processing
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        # Use adaptive thresholding to create binary image
-        binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-        
-        # Find contours
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            print("No contours found in fallback processing")
-            return None
-        
-        # Find the largest contour (assume it's the wheel)
-        largest_contour = max(contours, key=cv2.contourArea)
-        
-        # Create mask from largest contour
-        mask = np.zeros(gray.shape, dtype=np.uint8)
-        cv2.fillPoly(mask, [largest_contour], 255)
-        
-        # Get bounding box
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        box = [x, y, x + w, y + h]
-        
-        print(f"Fallback processing found contour with area: {cv2.contourArea(largest_contour)}")
-        
-        # Process based on view type
-        if is_top_view:
-            if wheel_height_mm is None:
-                print("Warning: No wheel height provided for top view processing")
-                return None
-            return process_top_view(frame, mask, box, camera_settings, wheel_models, selected_model, wheel_height_mm)
-        else:
-            return process_side_view(frame, mask, box, camera_settings, wheel_models, selected_model, depth_frame)
-            
-    except Exception as e:
-        print(f"Error in fallback processing: {e}")
         traceback.print_exc()
         return None
 

@@ -136,7 +136,7 @@ def take_photo():
     1. Side view first - to measure wheel height using depth data
     2. Top view second - to calculate diameter using the measured height
     """
-    global photo_count, frame_top, frame_side, signal_handler
+    global photo_count, frame_top, frame_side, signal_handler, measured_height_var, measured_dia_var
     
     if not streaming_active:
         # messagebox.showerror("Error", "No streams available to process. Start the streams first!")
@@ -263,9 +263,9 @@ def take_photo():
         height_mm = side_measurements['height_mm']
         diameter_mm = top_measurements['diameter_mm']
         
-        # Update measurement labels
-        height_label.config(text=f"Height: {height_mm:.1f}mm")
-        diameter_label.config(text=f"Diameter: {diameter_mm:.1f}mm")
+        # Update measurement variables instead of non-existent labels
+        measured_height_var.set(f"{height_mm:.1f} mm")
+        measured_dia_var.set(f"{diameter_mm:.1f} mm")
         
         # Check against model specifications if available
         if WHEEL_MODELS and model_name in WHEEL_MODELS:
@@ -277,23 +277,18 @@ def take_photo():
                 height_error = height_mm - model_height
                 diameter_error = diameter_mm - model_diameter
                 
-                # Update error labels
-                height_error_label.config(text=f"Height Error: {height_error:+.1f}mm")
-                diameter_error_label.config(text=f"Diameter Error: {diameter_error:+.1f}mm")
-                
-                # Set colors based on tolerances
+                # Update status based on tolerances (since error labels don't exist)
                 height_tolerance = model_spec.get('height_tolerance_mm', 5.0)
                 diameter_tolerance = model_spec.get('diameter_tolerance_mm', 5.0)
                 
-                if abs(height_error) <= height_tolerance:
-                    height_error_label.config(fg=PASS_COLOR)
+                height_ok = abs(height_error) <= height_tolerance
+                diameter_ok = abs(diameter_error) <= diameter_tolerance
+                
+                # Update status based on tolerances
+                if height_ok and diameter_ok:
+                    status_label_main.config(text=f"Measurements OK - Height: {height_error:+.1f}mm, Diameter: {diameter_error:+.1f}mm")
                 else:
-                    height_error_label.config(fg=FAIL_COLOR)
-                    
-                if abs(diameter_error) <= diameter_tolerance:
-                    diameter_error_label.config(fg=PASS_COLOR)
-                else:
-                    diameter_error_label.config(fg=FAIL_COLOR)
+                    status_label_main.config(text=f"Measurements NOK - Height: {height_error:+.1f}mm, Diameter: {diameter_error:+.1f}mm")
         
         # Save measurements to database
         try:
