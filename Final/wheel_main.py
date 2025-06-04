@@ -13,7 +13,7 @@ import queue
 from PIL import Image, ImageTk  # Still needed for UI image handling
 
 # Import from modular files
-from utils import update_display, update_panel_image, update_clock
+from utils import update_display, update_panel_image, update_clock, resize_with_aspect_ratio
 from camera_streams import RealSenseCamera, IPCamera, USBCamera, current_depth_image, frame_queue
 from image_processing import process_frame, load_model_in_background
 from wheel_measurements import classify_wheel_model
@@ -119,6 +119,14 @@ def init_globals():
         
     # Save settings to ensure they persist
     save_settings(current_settings, WHEEL_MODELS)
+     # Load the AI model immediately (no background loading)
+    print("Loading AI model...")
+    from image_processing import load_model
+    model = load_model()
+    if model is not None:
+        print("AI model loaded successfully")
+    else:
+        print("Warning: AI model failed to load")
 
 def take_photo():
     """
@@ -128,10 +136,10 @@ def take_photo():
     1. Side view first - to measure wheel height using depth data
     2. Top view second - to calculate diameter using the measured height
     """
-    global photo_count, frame_top, frame_side
+    global photo_count, frame_top, frame_side, signal_handler
     
     if not streaming_active:
-        messagebox.showerror("Error", "No streams available to process. Start the streams first!")
+        # messagebox.showerror("Error", "No streams available to process. Start the streams first!")
         return
     
     # Initialize frame variables
@@ -139,13 +147,13 @@ def take_photo():
     has_side_camera = frame_side is not None
     
     if not has_top_camera and not has_side_camera:
-        messagebox.showerror("Error", "No frames available to process. Start the streams first!")
+        # messagebox.showerror("Error", "No frames available to process. Start the streams first!")
         return
     
     # Track which camera scenario we're in
     camera_scenario = "both"  # Default: both cameras available
     
-    # NEW CODE: Use the available frame for both if only one camera is working
+    # Use the available frame for both if only one camera is working
     if has_top_camera and not has_side_camera:
         frame_side = frame_top.copy()  # Use top camera for side view if only side is unavailable
         print("Using top camera frame for side view processing")
@@ -159,7 +167,7 @@ def take_photo():
         os.makedirs(SAVE_DIR)
     
     photo_count += 1
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
     
     # Initialize filename variables to None
     filename_side = None
@@ -193,128 +201,127 @@ def take_photo():
         print(f"Saved side camera frame as both views")
     
     # Process side view first to get wheel height
-    side_measured_height = None
+    side_measurements = None
+    top_measurements = None
     
-    # Process side view first to get wheel height
-    measurements_side = {}
+    # Get depth frame from RealSense camera if available
+    depth_frame = None
+    if realsense_camera is not None and hasattr(realsense_camera, 'get_depth_frame'):
+        depth_frame = realsense_camera.get_depth_frame()
+    
+    # Process side view first
     status_label_main.config(text="Processing: Measuring wheel height from side view...")
-    processed_side, measurements_side = process_frame(frame_side, is_top_view=False, 
-                                                     camera_settings=current_settings["calibration"],
-                                                     wheel_models=WHEEL_MODELS,
-                                                     selected_model=current_settings["selected_model"])
-    
-    # Display processed side view
-    if camera_scenario == "both" or camera_scenario == "side_only":
-        # Display in side processed panel
-        update_display(side_processed_panel, processed_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+    if frame_side is not None:
+        side_measurements = process_frame(
+            frame_side,
+            is_top_view=False,
+            camera_settings=current_settings,
+            wheel_models=WHEEL_MODELS,
+            selected_model=current_model_display.get() if current_model_display else None,
+            depth_frame=depth_frame
+        )
         
-        # If only side camera, also display in top processed panel
-        if camera_scenario == "side_only":
-            update_display(top_processed_panel, processed_side, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
-            status_label_top.config(text="Using side camera image")
+        if side_measurements:
+            # Update side view display with visualization
+            update_panel_image(side_panel, side_measurements['visualization'])
+            print(f"Side view height: {side_measurements['height_mm']:.1f}mm")
+        else:
+            print("Failed to process side view")
+            status_label_main.config(text="Error: Failed to process side view")
+            return
     
-    if measurements_side.get("type") == "Side":
-        # Extract height and depth information
-        side_measured_height = measurements_side.get("height_mm", None)
-        camera_to_wheel_distance = measurements_side.get("depth_mm", None)
+    # Process top view using height from side view
+    status_label_main.config(text="Processing: Measuring wheel diameter from top view...")
+    if frame_top is not None and side_measurements:
+        top_measurements = process_frame(
+            frame_top,
+            is_top_view=True,
+            camera_settings=current_settings,
+            wheel_models=WHEEL_MODELS,
+            selected_model=current_model_display.get() if current_model_display else None,
+            wheel_height_mm=side_measurements['height_mm']
+        )
         
-        if side_measured_height is not None:
-            measured_height_var.set(f"{side_measured_height:.1f} mm")
-            current_settings["calibration"]["wheel_height"] = side_measured_height
-            print(f"Updated wheel height for diameter calculation: {side_measured_height:.2f} mm")
+        if top_measurements:
+            # Update top view display with visualization
+            update_panel_image(top_panel, top_measurements['visualization'])
+            print(f"Top view diameter: {top_measurements['diameter_mm']:.1f}mm")
+        else:
+            print("Failed to process top view")
+            status_label_main.config(text="Error: Failed to process top view")
+            return
+    
+    # If we have both measurements, update the UI and send data
+    if side_measurements and top_measurements:
+        # Update status
+        status_label_main.config(text="Measurements complete")
         
-        if camera_to_wheel_distance is not None:
-            side_cam_distance_result.set(f"{camera_to_wheel_distance:.1f} mm")
-
-    # Process top view using the height information from side view
-    measurements_top = {}
-    status_label_main.config(text="Processing: Calculating wheel diameter using height data...")
-    processed_top, measurements_top = process_frame(frame_top, is_top_view=True,
-                                                   camera_settings=current_settings["calibration"],
-                                                   wheel_models=WHEEL_MODELS,
-                                                   selected_model=current_settings["selected_model"],
-                                                   wheel_height_mm=side_measured_height)
-    
-    # Display processed top view
-    if camera_scenario == "both" or camera_scenario == "top_only":
-        # Display in top processed panel
-        update_display(top_processed_panel, processed_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+        # Get current model name
+        model_name = current_model_display.get() if current_model_display else "Unknown"
         
-        # If only top camera, also display in side processed panel
-        if camera_scenario == "top_only":
-            update_display(side_processed_panel, processed_top, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
-            status_label_side.config(text="Using top camera image")
-    
-    # Update status based on camera scenario
-    if camera_scenario == "both":
-        status_label_main.config(text="Processing complete: Both height and diameter measured.")
-    elif camera_scenario == "side_only":
-        status_label_main.config(text="Processing complete: Using side camera for both views.")
-        # Clear the "No Top Camera" message if it exists
-        status_label_top.config(text="Using side camera image for top view")
-    elif camera_scenario == "top_only":
-        status_label_main.config(text="Processing complete: Using top camera for both views.")
-        # Clear the "No Side Camera" message if it exists
-        status_label_side.config(text="Using top camera image for side view")
-    
-    # Get measurements and update display
-    if measurements_top.get("type") == "Round":
-        diameter_mm = measurements_top.get("diameter_mm", 0)
-        measured_dia_var.set(f"{diameter_mm:.1f} mm")
-    else:
-        measured_dia_var.set("No data")
-        diameter_mm = 0
-
-    # Update height measurement display
-    if measurements_side.get("type") == "Side":
-        height_mm = measurements_side.get("height_mm", 0)
-        measured_height_var.set(f"{height_mm:.1f} mm")
-    else:
-        measured_height_var.set("No data")
-        height_mm = 0
+        # Update measurements display
+        height_mm = side_measurements['height_mm']
+        diameter_mm = top_measurements['diameter_mm']
         
-    # Update the current model display
-    global current_model_display
-    model_type = current_settings["selected_model"]
-    if current_model_display:
-        current_model_display.set(model_type)
+        # Update measurement labels
+        height_label.config(text=f"Height: {height_mm:.1f}mm")
+        diameter_label.config(text=f"Diameter: {diameter_mm:.1f}mm")
         
-    # No need for status updates since we're not checking tolerances anymore
-    
-    # Save to database
-    part_no = f"INDIP {timestamp.split('_')[0]} {photo_count}"
-    model_type = current_settings["selected_model"]
-    diameter_mm = measurements_top.get("diameter_mm", 0)
-    height_mm = measurements_side.get("height_mm", 0)
-    
-    # Update database with simplified parameters (no test_result or thickness_mm)
-    add_inspection(
-        part_no, 
-        model_type, 
-        diameter_mm, 
-        height_mm, 
-        filename_top if filename_top else '', 
-        filename_side if filename_side else ''
-    )
-    
-    # Update wheel counts and count frame
-    update_wheel_counts()
-    update_count_frame()
-    
-    # Send measurement data via modbus frame after processing
-    if signal_handler:
+        # Check against model specifications if available
+        if WHEEL_MODELS and model_name in WHEEL_MODELS:
+            model_spec = WHEEL_MODELS[model_name]
+            model_height = model_spec.get('height_mm')
+            model_diameter = model_spec.get('diameter_mm')
+            
+            if model_height and model_diameter:
+                height_error = height_mm - model_height
+                diameter_error = diameter_mm - model_diameter
+                
+                # Update error labels
+                height_error_label.config(text=f"Height Error: {height_error:+.1f}mm")
+                diameter_error_label.config(text=f"Diameter Error: {diameter_error:+.1f}mm")
+                
+                # Set colors based on tolerances
+                height_tolerance = model_spec.get('height_tolerance_mm', 5.0)
+                diameter_tolerance = model_spec.get('diameter_tolerance_mm', 5.0)
+                
+                if abs(height_error) <= height_tolerance:
+                    height_error_label.config(fg=PASS_COLOR)
+                else:
+                    height_error_label.config(fg=FAIL_COLOR)
+                    
+                if abs(diameter_error) <= diameter_tolerance:
+                    diameter_error_label.config(fg=PASS_COLOR)
+                else:
+                    diameter_error_label.config(fg=FAIL_COLOR)
+        
+        # Save measurements to database
         try:
-            signal_handler.send_measurement_data(model_type, diameter_mm, height_mm)
-            status_text = f"Captured and processed frames {photo_count} at {timestamp}. Measurement data sent."
+            add_inspection(
+                model_name=model_name,
+                height_mm=height_mm,
+                diameter_mm=diameter_mm,
+                side_image_path=filename_side,
+                top_image_path=filename_top,
+                timestamp=timestamp
+            )
+            print("Measurements saved to database")
         except Exception as e:
-            print(f"Error sending measurement data: {e}")
-            status_text = f"Captured and processed frames {photo_count} at {timestamp}. Failed to send data."
+            print(f"Error saving to database: {e}")
+        
+        # Send measurements via Modbus if signal handler is available
+        if signal_handler is not None:
+            try:
+                signal_handler.send_measurement_data(model_name, diameter_mm, height_mm)
+                print("Measurements sent via Modbus")
+            except Exception as e:
+                print(f"Error sending measurements via Modbus: {e}")
+        
+        # Update wheel model counts
+        update_wheel_counts()
     else:
-        status_text = f"Captured and processed frames {photo_count} at {timestamp}. Signal handler not available."
-    
-    status_label_main.config(text=status_text)
-
-# Function removed as we no longer track passing/failing status
+        status_label_main.config(text="Error: Incomplete measurements")
+        print("Failed to get complete measurements")
 
 def start_streaming():
     """Start streaming from cameras"""
@@ -694,6 +701,86 @@ def on_reports_close(window):
     global reports_win
     window.destroy()
     reports_win = None
+   
+def upload_image(is_top_view=True):
+    """Upload and process an image file"""
+    file_path = filedialog.askopenfilename(
+        title="Select Image", 
+        filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif")]
+    )
+    
+    if not file_path:
+        return
+    
+    try:
+        frame = cv2.imread(file_path)
+        if frame is None:
+            messagebox.showerror("Error", "Failed to read image file.")
+            return
+        
+        # Check for associated metadata file
+        base_name = os.path.splitext(file_path)[0]
+        meta_file = f"{base_name}_metadata.csv"
+        global metadata_file_path
+        if os.path.exists(meta_file):
+            metadata_file_path = meta_file
+            print(f"Using metadata from: {meta_file}")
+        
+        if is_top_view:
+            global frame_top
+            frame_top = frame.copy()
+            display_frame = resize_with_aspect_ratio(frame, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
+            update_display(top_panel, display_frame, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            
+            result = process_frame(
+                frame,
+                is_top_view=True,
+                camera_settings=current_settings,
+                wheel_models=WHEEL_MODELS,
+                selected_model=current_model_display.get() if current_model_display else None
+            )
+            
+            if result:
+                # Update top view display with visualization
+                update_display(top_processed_panel, result['visualization'], TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+                
+                # Update result display
+                if 'diameter_mm' in result:
+                    measured_dia_var.set(f"{result['diameter_mm']:.2f} mm")
+                    result_status_var.set("OK" if result.get("is_ok", False) else "NOT OK")
+                    update_result_frame()
+        else:
+            global frame_side
+            frame_side = frame.copy()
+            display_frame = resize_with_aspect_ratio(frame, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
+            update_display(side_panel, display_frame, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            
+            # For uploaded side view images, we don't have depth frame, so pass None
+            result = process_frame(
+                frame,
+                is_top_view=False,
+                camera_settings=current_settings,
+                wheel_models=WHEEL_MODELS,
+                selected_model=current_model_display.get() if current_model_display else None,
+                depth_frame=None
+            )
+            
+            if result:
+                # Update side view display with visualization
+                update_display(side_processed_panel, result['visualization'], SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+                
+                # Update result display
+                if 'height_mm' in result:
+                    measured_height_var.set(f"{result['height_mm']:.2f} mm")
+                    
+                    # Update side camera distance result if available
+                    if 'depth_mm' in result:
+                        side_cam_distance_result.set(f"{result['depth_mm']:.1f} mm")
+        
+        status_label_main.config(text=f"Processed uploaded {'top' if is_top_view else 'side'} view image: {os.path.basename(file_path)}")
+    except Exception as e:
+        messagebox.showerror("Processing Error", f"Error processing image: {e}")
+        print(traceback.format_exc())
 
 def signal_handler_callback(signal_type=""):
     """Handle modbus frame with complete measurement cycle"""
@@ -929,8 +1016,8 @@ def main():
     stop_button = ttk.Button(button_frame, text="Stop Streaming", command=stop_streaming_func, state=tk.DISABLED)
     stop_button.grid(row=0, column=1, padx=3, pady=5)
     
-    # photo_button = ttk.Button(button_frame, text="Take Photo", command=take_photo, state=tk.DISABLED)
-    # photo_button.grid(row=0, column=2, padx=3, pady=5)
+    photo_button = ttk.Button(button_frame, text="Take Photo", command=take_photo)
+    photo_button.grid(row=0, column=2, padx=3, pady=5)
     
     # auto_photo_button = ttk.Button(button_frame, text="Start Auto Capture", command=auto_capture, state=tk.DISABLED)
     # auto_photo_button.grid(row=0, column=3, padx=3, pady=5)
@@ -938,17 +1025,17 @@ def main():
     # detectObject_button = ttk.Button(button_frame, text="Detect Object", command=detect_object)
     # detectObject_button.grid(row=0, column=4, padx=3, pady=5)
 
-    # upload_top_button = ttk.Button(button_frame, text="Upload Top View", command=lambda: upload_image(is_top_view=True))
-    # upload_top_button.grid(row=0, column=4, padx=3, pady=5)
+    upload_top_button = ttk.Button(button_frame, text="Upload Top View", command=lambda: upload_image(is_top_view=True))
+    upload_top_button.grid(row=0, column=4, padx=3, pady=5)
     
-    # upload_side_button = ttk.Button(button_frame, text="Upload Side View", command=lambda: upload_image(is_top_view=False))
-    # upload_side_button.grid(row=0, column=5, padx=3, pady=5)
+    upload_side_button = ttk.Button(button_frame, text="Upload Side View", command=lambda: upload_image(is_top_view=False))
+    upload_side_button.grid(row=0, column=5, padx=3, pady=5)
     
     report_button = ttk.Button(button_frame, text="Generate Report", command=open_report_window)
-    report_button.grid(row=0, column=5, padx=3, pady=5)
+    report_button.grid(row=0, column=6, padx=3, pady=5)
     
     settings_button = ttk.Button(button_frame, text="Settings", command=open_settings_window)
-    settings_button.grid(row=0, column=6, padx=3, pady=5)
+    settings_button.grid(row=0, column=7, padx=3, pady=5)
     
     # Status row
     status_frame = ttk.Frame(main_frame)

@@ -196,9 +196,10 @@ class SignalHandler:
                             # Print raw data in hex for debugging
                             hex_data = ' '.join([f'{b:02X}' for b in data])
                             # print(f"Received {len(data)} bytes (hex): {hex_data}")
-                            
-                            # Process the data to find valid Modbus frames
-                            self._process_modbus_data(data, slave_id)
+                            if self.signal_callback:
+                                self.signal_callback(signal_type="MODBUS_FRAME")
+                            # # Process the data to find valid Modbus frames
+                            # self._process_modbus_data(data, slave_id)
                             # frame_count += 1
                         else:
                             print("No data read despite bytes_waiting > 0")

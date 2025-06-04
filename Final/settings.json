@@ -4,7 +4,7 @@
         "auto_capture_interval": 5,
         "top_camera_url": "tcp://192.168.100.50:8080",
         "side_camera_url": "tcp://192.168.100.51:8080",
-        "com_port": "COM6",
+        "com_port": "COM7",
         "baud_rate": 19200,
         "modbus_slave_id": 1,
         "calibration": {
@@ -52,5 +52,5 @@
         }
     },
     "selected_model": "13-16",
-    "last_updated": "27-05-2025 18:15:24"
+    "last_updated": "04-06-2025 10:47:49"
 }
