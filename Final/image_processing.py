@@ -86,7 +86,7 @@ def load_model():
         # Check for model weights file
         model_exists = os.path.exists(MODEL_PATH)
         print(f"Model file exists at {MODEL_PATH}: {model_exists}")
-        
+            
         # Load weights if available
         if model_exists:
             print(f"Loading model weights from {MODEL_PATH}")
@@ -95,8 +95,8 @@ def load_model():
         else:
             print(f"Model file not found at {MODEL_PATH}. Using pre-trained COCO weights.")
             print("Note: This may not work well for wheel detection without fine-tuning.")
-        
-        # Set model to evaluation mode
+            
+        # Set model to evaluation mode (always do this)
         model.eval()
         wheel_detection_model = model
         print("Model loaded and ready for inference")
@@ -108,7 +108,14 @@ def load_model():
         return None
 
 def load_model_in_background():
-    """Start loading the model in a background thread"""
+    """Start loading the model in a background thread (only if not already loaded)"""
+    global wheel_detection_model
+    
+    # Check if model is already loaded
+    if wheel_detection_model is not None:
+        print("Model already loaded - skipping background loading")
+        return
+    
     def _load_model_thread():
         try:
             result = load_model()
@@ -123,6 +130,65 @@ def load_model_in_background():
     # Start loading in background thread
     threading.Thread(target=_load_model_thread, daemon=True).start()
     print("Started background model loading thread")
+
+def find_vertical_intersections(contour, center_x, image_shape):
+    """
+    Find the top and bottom intersection points of a vertical line with a contour
+    
+    Args:
+        contour: OpenCV contour points
+        center_x: X coordinate of the vertical line
+        image_shape: Shape of the image (height, width)
+        
+    Returns:
+        tuple: (top_y, bottom_y) intersection points or (None, None) if not found
+    """
+    try:
+        # Extract contour points and reshape
+        contour_points = contour.reshape(-1, 2)
+        
+        # Find all contour points that are close to our vertical center line
+        # Allow a small tolerance (±2 pixels) to account for discrete pixels
+        tolerance = 2
+        near_center = contour_points[
+            np.abs(contour_points[:, 0] - center_x) <= tolerance
+        ]
+        
+        if len(near_center) == 0:
+            print(f"No contour points found near center_x={center_x} with tolerance={tolerance}")
+            
+            # Fallback: interpolate intersections by checking each Y coordinate
+            height = image_shape[0]
+            intersections_y = []
+            
+            # Create a more detailed search by checking every Y coordinate
+            for y in range(height):
+                # Check if the vertical line at center_x intersects the contour at this y
+                if cv2.pointPolygonTest(contour, (float(center_x), float(y)), False) >= 0:
+                    intersections_y.append(y)
+            
+            if len(intersections_y) >= 2:
+                top_y = min(intersections_y)
+                bottom_y = max(intersections_y)
+                print(f"Found intersections via polygon test: top_y={top_y}, bottom_y={bottom_y}")
+                return top_y, bottom_y
+            else:
+                print(f"Polygon test found only {len(intersections_y)} intersections")
+                return None, None
+        else:
+            # Found points near the center line, get the extremes
+            y_coordinates = near_center[:, 1]
+            top_y = int(np.min(y_coordinates))
+            bottom_y = int(np.max(y_coordinates))
+            
+            print(f"Found {len(near_center)} contour points near center line")
+            print(f"Top intersection: y={top_y}, Bottom intersection: y={bottom_y}")
+            
+            return top_y, bottom_y
+            
+    except Exception as e:
+        print(f"Error finding vertical intersections: {e}")
+        return None, None
 
 def fit_circle_least_squares(points):
     """Fit a circle to points using least squares method"""
@@ -248,7 +314,7 @@ def process_frame(frame, is_top_view=True, camera_settings=None, wheel_models=No
             return process_top_view(frame, mask_binary, box, camera_settings, wheel_models, selected_model, wheel_height_mm)
         else:
             return process_side_view(frame, mask_binary, box, camera_settings, wheel_models, selected_model, depth_frame)
-            
+        
     except Exception as e:
         print(f"Error processing frame with model: {e}")
         traceback.print_exc()
@@ -308,9 +374,21 @@ def process_top_view(frame, mask_binary, box, camera_settings, wheel_models, sel
         # Calculate pixel diameter
         pixel_diameter = radius * 2
         
+        # Check if the fitted circle represents the complete wheel
+        frame_height, frame_width = frame.shape[:2]
+        circle_extends_beyond = (int(cx - radius) < 0 or int(cx + radius) >= frame_width or 
+                               int(cy - radius) < 0 or int(cy + radius) >= frame_height)
+        
+        if circle_extends_beyond:
+            print("Warning: Fitted circle extends beyond image boundaries")
+            print("Diameter measurement may be inaccurate - ensure full wheel is visible")
+        
         # Convert to real-world diameter using camera intrinsics and distance
         focal_length = intrinsics['fx']  # Use x focal length
         diameter_mm = (pixel_diameter * distance_to_wheel) / focal_length
+        
+        # Add accuracy warning to results if circle extends beyond boundaries
+        accuracy_note = " (partial wheel)" if circle_extends_beyond else ""
         
         # Create visualization
         vis_frame = frame.copy()
@@ -318,12 +396,47 @@ def process_top_view(frame, mask_binary, box, camera_settings, wheel_models, sel
         # Draw mask outline
         cv2.drawContours(vis_frame, contours, -1, (0, 255, 0), 2)
         
-        # Draw fitted circle
-        cv2.circle(vis_frame, (int(cx), int(cy)), int(radius), (0, 0, 255), 2)
+        # Draw fitted circle with boundary checking
+        frame_height, frame_width = vis_frame.shape[:2]
+        
+        # Check if circle extends beyond image boundaries
+        circle_left = int(cx - radius)
+        circle_right = int(cx + radius)
+        circle_top = int(cy - radius)
+        circle_bottom = int(cy + radius)
+        
+        circle_fits = (circle_left >= 0 and circle_right < frame_width and 
+                      circle_top >= 0 and circle_bottom < frame_height)
+        
+        if circle_fits:
+            # Draw full circle if it fits within image
+            cv2.circle(vis_frame, (int(cx), int(cy)), int(radius), (0, 0, 255), 2)
+            print(f"Full circle drawn - radius: {radius:.1f}px")
+        else:
+            # Draw partial circle using arc or just show center with text warning
+            cv2.circle(vis_frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)  # Center point
+            
+            # Draw lines to show the detected radius at image boundaries
+            if circle_left < 0:
+                cv2.line(vis_frame, (int(cx), int(cy)), (0, int(cy)), (0, 0, 255), 2)
+            if circle_right >= frame_width:
+                cv2.line(vis_frame, (int(cx), int(cy)), (frame_width-1, int(cy)), (0, 0, 255), 2)
+            if circle_top < 0:
+                cv2.line(vis_frame, (int(cx), int(cy)), (int(cx), 0), (0, 0, 255), 2)
+            if circle_bottom >= frame_height:
+                cv2.line(vis_frame, (int(cx), int(cy)), (int(cx), frame_height-1), (0, 0, 255), 2)
+                
+            print(f"Circle extends beyond image - radius: {radius:.1f}px, showing partial visualization")
+            
+            # Add warning text
+            cv2.putText(vis_frame, "Circle extends beyond image", (10, 110), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        
+        # Always draw center point
         cv2.circle(vis_frame, (int(cx), int(cy)), 2, (255, 0, 0), 3)
         
-        # Add measurement text
-        text = f"Diameter: {diameter_mm:.1f}mm"
+        # Add measurement text with accuracy note
+        text = f"Diameter: {diameter_mm:.1f}mm{accuracy_note}"
         cv2.putText(vis_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         
         # Add debug info
@@ -362,97 +475,191 @@ def process_side_view(frame, mask_binary, box, camera_settings, wheel_models, se
     try:
         print(f"Processing side view - mask shape: {mask_binary.shape}, depth available: {depth_frame is not None}")
         
-        # Find top and bottom center points of the mask
-        mask_points = np.where(mask_binary > 0)
-        if len(mask_points[0]) == 0:
-            print("No valid points in mask")
+        # Find contours from mask for precise measurement
+        contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            print("No contours found in mask")
             return None
             
-        print(f"Found {len(mask_points[0])} mask pixels")
-            
-        # Get vertical center line
-        center_x = int(np.mean(mask_points[1]))
-        top_y = np.min(mask_points[0])
-        bottom_y = np.max(mask_points[0])
+        # Get the largest contour (should be the wheel)
+        main_contour = max(contours, key=cv2.contourArea)
+        print(f"Found main contour with {len(main_contour)} points")
         
-        print(f"Mask bounds - center_x: {center_x}, top_y: {top_y}, bottom_y: {bottom_y}")
+        # Calculate the center X of the bounding rectangle for accurate vertical line
+        x, y, w, h = cv2.boundingRect(main_contour)
+        center_x = x + w // 2
+        print(f"Calculated center_x: {center_x} from bounding rect")
+        
+        # Find intersection points of vertical center line with contour
+        top_y, bottom_y = find_vertical_intersections(main_contour, center_x, mask_binary.shape)
+        
+        if top_y is None or bottom_y is None:
+            print("Could not find valid top/bottom intersections with contour")
+            return None
+            
+        print(f"Contour intersections - center_x: {center_x}, top_y: {top_y}, bottom_y: {bottom_y}")
+        print(f"Wheel height in pixels: {bottom_y - top_y}")
         
         height_mm = None
         
         if depth_frame is not None:
-            print("Attempting depth-based height calculation...")
-            # Use depth data for accurate height calculation
-            intrinsics = load_camera_intrinsics("side_camera")
-            if intrinsics is None:
-                print("Could not load camera intrinsics")
-            else:
-                print(f"Loaded intrinsics: fx={intrinsics['fx']}, fy={intrinsics['fy']}")
+            print("Attempting depth-based height calculation using RealSense factory methods...")
+            
+            # Get intrinsics directly from the RealSense aligned depth frame
+            try:
+                depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+                print(f"RealSense intrinsics: fx={depth_intrin.fx:.1f}, fy={depth_intrin.fy:.1f}")
+                print(f"Principal point: cx={depth_intrin.ppx:.1f}, cy={depth_intrin.ppy:.1f}")
                 
-                # Get depth scale from camera settings
+                # Get depth scale from the RealSense device
                 depth_scale = camera_settings.get('depth_scale', 0.001) if camera_settings else 0.001
                 print(f"Using depth scale: {depth_scale}")
                 
-                # Get depth values at top and bottom points
-                top_depth = get_valid_depth_in_window(center_x, top_y, depth_frame)
-                bottom_depth = get_valid_depth_in_window(center_x, bottom_y, depth_frame)
-                
-                print(f"Depth values - top: {top_depth}, bottom: {bottom_depth}")
-                
-                if top_depth is not None and bottom_depth is not None:
-                    # Convert depth values to real-world coordinates
-                    top_point_3d = project_point_to_3d(center_x, top_y, top_depth, intrinsics, depth_scale)
-                    bottom_point_3d = project_point_to_3d(center_x, bottom_y, bottom_depth, intrinsics, depth_scale)
+                # Helper function to get valid depth in a window (from simple_measurement.py)
+                def get_valid_depth_in_window_rs(x, y, depth_img, window_size=9):
+                    """Get valid depth value in a window around the specified point"""
+                    # Convert RealSense depth frame to numpy array if needed
+                    if hasattr(depth_img, 'get_data'):
+                        depth_array = np.asanyarray(depth_img.get_data(), dtype=np.uint16)
+                    else:
+                        depth_array = depth_img
                     
-                    if top_point_3d is not None and bottom_point_3d is not None:
-                        # Calculate height in mm
-                        height_mm = calculate_3d_distance(top_point_3d, bottom_point_3d)
-                        print(f"Calculated depth-based height: {height_mm:.1f}mm")
+                    half_window = window_size // 2
+                    h, w = depth_array.shape
+                    
+                    # Ensure coordinates are within bounds
+                    x = min(max(x, 0), w-1)
+                    y = min(max(y, 0), h-1)
+                    
+                    # Define window bounds
+                    x_start = max(x - half_window, 0)
+                    x_end = min(x + half_window + 1, w)
+                    y_start = max(y - half_window, 0)
+                    y_end = min(y + half_window + 1, h)
+                    
+                    # Extract window
+                    window = depth_array[y_start:y_end, x_start:x_end]
+                    
+                    # Get valid depths (non-zero)
+                    valid_depths = window[window > 0]
+                    
+                    if len(valid_depths) > 0:
+                        # Return median of valid depths for robustness
+                        return np.median(valid_depths)
+                    else:
+                        return 0
+                
+                # Try multiple points along the vertical center line to find valid depth
+                top_depth_raw = None
+                bottom_depth_raw = None
+                actual_top_y = None
+                actual_bottom_y = None
+                
+                # Search for valid top depth, moving down from the extreme top
+                for offset in range(0, 20):  # Search up to 20 pixels down from top
+                    test_y = top_y + offset
+                    if test_y < bottom_y:  # Don't go past the bottom
+                        depth_val = get_valid_depth_in_window_rs(center_x, test_y, depth_frame, 9)
+                        if depth_val > 0:
+                            top_depth_raw = depth_val
+                            actual_top_y = test_y
+                            print(f"Found valid top depth at y={test_y} (offset +{offset}): {depth_val}")
+                            break
+                
+                # Search for valid bottom depth, moving up from the extreme bottom  
+                for offset in range(0, 20):  # Search up to 20 pixels up from bottom
+                    test_y = bottom_y - offset
+                    if test_y > top_y:  # Don't go past the top
+                        depth_val = get_valid_depth_in_window_rs(center_x, test_y, depth_frame, 9)
+                        if depth_val > 0:
+                            bottom_depth_raw = depth_val
+                            actual_bottom_y = test_y
+                            print(f"Found valid bottom depth at y={test_y} (offset -{offset}): {depth_val}")
+                            break
+                
+                print(f"Raw depth values - top: {top_depth_raw}, bottom: {bottom_depth_raw}")
+                
+                if top_depth_raw is not None and bottom_depth_raw is not None and top_depth_raw > 0 and bottom_depth_raw > 0:
+                    # Convert raw depth values to meters
+                    top_dist = top_depth_raw * depth_scale
+                    bottom_dist = bottom_depth_raw * depth_scale
+                    
+                    print(f"Distances - top: {top_dist:.3f}m, bottom: {bottom_dist:.3f}m")
+                    
+                    # Use RealSense factory function to convert 2D points to 3D
+                    import pyrealsense2 as rs
+                    top_point_3d = rs.rs2_deproject_pixel_to_point(
+                        depth_intrin, [center_x, actual_top_y], top_dist)
+                    bottom_point_3d = rs.rs2_deproject_pixel_to_point(
+                        depth_intrin, [center_x, actual_bottom_y], bottom_dist)
+                    
+                    print(f"3D points - top: {top_point_3d}, bottom: {bottom_point_3d}")
+                    
+                    # Calculate height using 3D Euclidean distance
+                    height_meters = np.sqrt(
+                        (top_point_3d[0] - bottom_point_3d[0])**2 + 
+                        (top_point_3d[1] - bottom_point_3d[1])**2 + 
+                        (top_point_3d[2] - bottom_point_3d[2])**2)
+                    
+                    # Convert to millimeters
+                    height_mm = height_meters * 1000
+                    print(f"Calculated 3D height: {height_mm:.1f}mm using RealSense factory methods")
                 else:
                     print("Could not get valid depth values")
+                    
+            except Exception as e:
+                print(f"Error using RealSense intrinsics: {e}")
+                print("Falling back to manual method...")
+                # Fallback to the old method if RealSense intrinsics fail
+                intrinsics = load_camera_intrinsics("side_camera")
+                if intrinsics is None:
+                    print("Could not load camera intrinsics from file either")
+                else:
+                    # Original depth calculation code as fallback
+                    print("Using fallback method with JSON intrinsics")
         
         if height_mm is None:
-            # Fallback: estimate height using pixel measurements and known scale
-            print("Using pixel-based height estimation (less accurate)")
-            pixel_height = bottom_y - top_y
-            print(f"Pixel height: {pixel_height} pixels")
-            
-            # Try to get estimated scale from camera settings or use default
-            pixels_per_mm = camera_settings.get('pixels_per_mm', 2.0) if camera_settings else 2.0
-            height_mm = pixel_height / pixels_per_mm
-            print(f"Initial height estimate: {height_mm:.1f}mm (using {pixels_per_mm} pixels/mm)")
-            
-            # If we have a selected model, we can adjust based on expected height
-            if selected_model and wheel_models and selected_model in wheel_models:
-                expected_height = wheel_models[selected_model].get('height_mm', height_mm)
-                # Use expected height as a reference for scaling
-                if expected_height and pixel_height > 0:
-                    pixels_per_mm = pixel_height / expected_height
-                    height_mm = expected_height
-                    print(f"Using model reference height: {height_mm:.1f}mm")
+            print("Failed to calculate height - depth data required for accurate measurement")
+            return None
         
         # Create visualization
         vis_frame = frame.copy()
         
-        # Draw mask outline
-        contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(vis_frame, contours, -1, (0, 255, 0), 2)
+        # Draw contour outline
+        cv2.drawContours(vis_frame, [main_contour], -1, (0, 255, 0), 2)
         
-        # Draw measurement line
-        cv2.line(vis_frame, (center_x, top_y), (center_x, bottom_y), (0, 0, 255), 2)
+        # Draw vertical center line (full height for reference)
+        cv2.line(vis_frame, (center_x, 0), (center_x, vis_frame.shape[0]), (255, 255, 0), 1)
         
-        # Add measurement points
-        cv2.circle(vis_frame, (center_x, top_y), 5, (255, 0, 0), -1)
-        cv2.circle(vis_frame, (center_x, bottom_y), 5, (255, 0, 0), -1)
+        # Use actual measurement points if they were found, otherwise use contour extremes
+        measurement_top_y = actual_top_y if 'actual_top_y' in locals() and actual_top_y is not None else top_y
+        measurement_bottom_y = actual_bottom_y if 'actual_bottom_y' in locals() and actual_bottom_y is not None else bottom_y
+        
+        # Draw measurement line (actual measurement)
+        cv2.line(vis_frame, (center_x, measurement_top_y), (center_x, measurement_bottom_y), (0, 0, 255), 3)
+        
+        # Add measurement points with larger circles
+        cv2.circle(vis_frame, (center_x, measurement_top_y), 8, (255, 0, 0), -1)
+        cv2.circle(vis_frame, (center_x, measurement_bottom_y), 8, (255, 0, 0), -1)
+        
+        # Add smaller circles for contour extremes if different from measurement points
+        if measurement_top_y != top_y:
+            cv2.circle(vis_frame, (center_x, top_y), 4, (255, 255, 0), -1)  # Yellow for contour extreme
+        if measurement_bottom_y != bottom_y:
+            cv2.circle(vis_frame, (center_x, bottom_y), 4, (255, 255, 0), -1)  # Yellow for contour extreme
+        
+        # Add center point (using actual measurement points)
+        cv2.circle(vis_frame, (center_x, (measurement_top_y + measurement_bottom_y) // 2), 5, (0, 255, 255), -1)
         
         # Add measurement text
-        method = "depth-based" if depth_frame is not None and height_mm else "pixel-based"
-        text = f"Height: {height_mm:.1f}mm ({method})"
+        text = f"Height: {height_mm:.1f}mm (depth-based)"
         cv2.putText(vis_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         
         # Add pixel dimensions for debugging
-        pixel_height = bottom_y - top_y
-        debug_text = f"Pixels: {pixel_height}px"
-        cv2.putText(vis_frame, debug_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        contour_pixel_height = bottom_y - top_y
+        measurement_pixel_height = measurement_bottom_y - measurement_top_y
+        debug_text = f"Contour: {contour_pixel_height}px, Measured: {measurement_pixel_height}px"
+        cv2.putText(vis_frame, debug_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         print(f"Side view processing complete - height: {height_mm:.1f}mm")
         

@@ -81,15 +81,30 @@ class SignalHandler:
         if not com_port:
             try:
                 available_ports = [port.device for port in serial.tools.list_ports.comports()]
-                for port in available_ports:
-                    if "Arduino" in port.description or 'USB' in port.description:
-                        com_port = port
-                    # com_port = available_ports[0]  # Use the first available port
+                if available_ports:
+                    com_port = available_ports[0]  # Use the first available port
                     print(f"Auto-detected COM port: {com_port}")
                     # Update settings with the detected port
                     self.settings["com_port"] = com_port
-                    # Save the updated settings
-                    
+                #  available_ports = [port.device for port in serial.tools.list_ports.comports()]
+                # for port in available_ports:
+                #     if "Arduino" in port.description or 'USB' in port.description:
+                #         com_port = port
+                #     # com_port = available_ports[0]  # Use the first available port
+                #     print(f"Auto-detected COM port: {com_port}")
+                #     # Update settings with the detected port
+                #     self.settings["com_port"] = com_port
+                #     # Save the updated settings    # Save the updated settings
+                    try:
+                        with open("settings.json", "r") as f:
+                            data = json.load(f)
+                        if "settings" in data:
+                            data["settings"]["com_port"] = com_port
+                            with open("settings.json", "w") as f:
+                                json.dump(data, f, indent=4)
+                            print(f"Updated settings.json with auto-detected COM port: {com_port}")
+                    except Exception as e:
+                        print(f"Error saving auto-detected COM port: {e}")
                 else:
                     print("No COM ports available")
                     return False

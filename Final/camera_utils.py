@@ -12,54 +12,65 @@ def load_camera_intrinsics(camera_type="side_camera"):
         camera_type (str): Type of camera ("top_camera" or "side_camera")
         
     Returns:
-        dict: Camera intrinsics including fx, fy, cx, cy values
+        dict: Camera intrinsics including fx, fy, cx, cy values, or None if failed to load
     """
     intrinsics_file = os.path.join(os.path.dirname(__file__), "camera_intrinsics.json")
     
     if not os.path.exists(intrinsics_file):
-        print(f"Warning: Camera intrinsics file not found at {intrinsics_file}")
-        # Return default values
-        return {
-            "fx": 900.0,
-            "fy": 900.0,
-            "cx": 640.0,
-            "cy": 360.0,
-            "width": 1280,
-            "height": 720
-        }
+        print(f"Error: Camera intrinsics file not found at {intrinsics_file}")
+        print("Cannot proceed without camera calibration data")
+        return None
     
     try:
         with open(intrinsics_file, 'r') as f:
             intrinsics_data = json.load(f)
         
-        camera_data = intrinsics_data.get(camera_type, {})
+        if camera_type not in intrinsics_data:
+            print(f"Error: Camera type '{camera_type}' not found in intrinsics file")
+            print(f"Available camera types: {list(intrinsics_data.keys())}")
+            return None
         
-        # Extract camera matrix values
-        camera_matrix = camera_data.get("camera_matrix", [
-            [900.0, 0.0, 640.0],
-            [0.0, 900.0, 360.0],
-            [0.0, 0.0, 1.0]
-        ])
+        camera_data = intrinsics_data[camera_type]
         
-        return {
+        # Validate required fields
+        if "camera_matrix" not in camera_data:
+            print(f"Error: 'camera_matrix' not found for camera type '{camera_type}'")
+            return None
+            
+        camera_matrix = camera_data["camera_matrix"]
+        
+        # Validate camera matrix structure
+        if (not isinstance(camera_matrix, list) or 
+            len(camera_matrix) != 3 or 
+            len(camera_matrix[0]) != 3):
+            print(f"Error: Invalid camera matrix format for camera type '{camera_type}'")
+            return None
+        
+        # Extract intrinsic parameters from JSON data only
+        intrinsics = {
             "fx": camera_matrix[0][0],
             "fy": camera_matrix[1][1], 
             "cx": camera_matrix[0][2],
-            "cy": camera_matrix[1][2],
-            "width": camera_data.get("width", 1280),
-            "height": camera_data.get("height", 720)
+            "cy": camera_matrix[1][2]
         }
+        
+        # Add optional parameters if they exist
+        if "width" in camera_data:
+            intrinsics["width"] = camera_data["width"]
+        if "height" in camera_data:
+            intrinsics["height"] = camera_data["height"]
+        if "dist_coeffs" in camera_data:
+            intrinsics["dist_coeffs"] = camera_data["dist_coeffs"]
+            
+        print(f"Successfully loaded intrinsics for {camera_type}: fx={intrinsics['fx']:.1f}, fy={intrinsics['fy']:.1f}")
+        return intrinsics
+        
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON format in camera intrinsics file: {e}")
+        return None
     except Exception as e:
         print(f"Error loading camera intrinsics: {e}")
-        # Return default values
-        return {
-            "fx": 900.0,
-            "fy": 900.0,
-            "cx": 640.0,
-            "cy": 360.0,
-            "width": 1280,
-            "height": 720
-        }
+        return None
 
 def project_point_to_3d(x, y, depth, intrinsics, depth_scale):
     """

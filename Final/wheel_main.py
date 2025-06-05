@@ -29,10 +29,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Configuration
 SAVE_DIR = "captured_frames"
-SIDE_PANEL_WIDTH = 640
-SIDE_PANEL_HEIGHT = 480
-TOP_PANEL_WIDTH = 640
-TOP_PANEL_HEIGHT = 480
 
 # UI Color Scheme
 BG_COLOR = "#AFE1AF"
@@ -42,7 +38,7 @@ HIGHLIGHT_COLOR = "#5c8cd5"
 PASS_COLOR = "#4caf50"
 FAIL_COLOR = "#f44336"
 REALSENSE_URL = "realsense://"
-TOP_CAMERA_URL = "tcp://192.168.100.50:8080"  # Adjust based on your camera
+TOP_CAMERA_URL = "http://192.168.100.50:8080/stream-hd"  # Adjust based on your camera
 
 # Global variables
 current_settings = None
@@ -58,11 +54,11 @@ model_count_vars = {}  # Will hold StringVar for each model count
 current_model_display = None  # Will hold the StringVar for current model in result frame
 count_frame = None  # Add count_frame to global variables
 
-# Panel size constants
+# Panel size constants - optimized for 16:9 camera aspect ratio (1280x720)
 SIDE_PANEL_WIDTH = 640
-SIDE_PANEL_HEIGHT = 480
+SIDE_PANEL_HEIGHT = 360  # 640/360 = 1.78 ≈ 16:9 ratio
 TOP_PANEL_WIDTH = 640
-TOP_PANEL_HEIGHT = 480
+TOP_PANEL_HEIGHT = 360   # 640/360 = 1.78 ≈ 16:9 ratio
 
 # Global variables for real-world measurements
 real_measurements = {}
@@ -204,10 +200,38 @@ def take_photo():
     side_measurements = None
     top_measurements = None
     
-    # Get depth frame from RealSense camera if available
+    # Get aligned depth and color frames from RealSense camera if available
     depth_frame = None
-    if realsense_camera is not None and hasattr(realsense_camera, 'get_depth_frame'):
-        depth_frame = realsense_camera.get_depth_frame()
+    aligned_color_frame = None
+    
+    if realsense_camera is not None and realsense_camera.is_streaming:
+        try:
+            # Get the current aligned frames from the camera
+            # This ensures depth and color frames are properly synchronized
+            if hasattr(realsense_camera, 'aligned_frames') and realsense_camera.aligned_frames:
+                aligned_depth_frame = realsense_camera.aligned_frames.get_depth_frame()
+                aligned_color_frame_rs = realsense_camera.aligned_frames.get_color_frame()
+                
+                if aligned_depth_frame and aligned_color_frame_rs:
+                    # Convert RealSense frames to numpy arrays
+                    depth_frame = aligned_depth_frame
+                    aligned_color_frame = np.asanyarray(aligned_color_frame_rs.get_data())
+                    
+                    # Update frame_side with the properly aligned color frame
+                    frame_side = aligned_color_frame.copy()
+                    print("Using aligned depth and color frames from RealSense")
+                else:
+                    print("Warning: Could not get aligned frames, using existing frame_side")
+            else:
+                # Fallback: try to get depth frame directly (less ideal)
+                if hasattr(realsense_camera, 'get_depth_frame'):
+                    depth_frame = realsense_camera.get_depth_frame()
+                    print("Using separate depth frame (not guaranteed to be aligned)")
+        except Exception as e:
+            print(f"Error getting aligned frames: {e}")
+            # Fallback to existing method
+            if hasattr(realsense_camera, 'get_depth_frame'):
+                depth_frame = realsense_camera.get_depth_frame()
     
     # Process side view first
     status_label_main.config(text="Processing: Measuring wheel height from side view...")
@@ -223,7 +247,7 @@ def take_photo():
         
         if side_measurements:
             # Update side view display with visualization
-            update_panel_image(side_panel, side_measurements['visualization'])
+            update_display(side_panel, side_measurements['visualization'], SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
             print(f"Side view height: {side_measurements['height_mm']:.1f}mm")
         else:
             print("Failed to process side view")
@@ -244,7 +268,7 @@ def take_photo():
         
         if top_measurements:
             # Update top view display with visualization
-            update_panel_image(top_panel, top_measurements['visualization'])
+            update_display(top_panel, top_measurements['visualization'], TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
             print(f"Top view diameter: {top_measurements['diameter_mm']:.1f}mm")
         else:
             print("Failed to process top view")
@@ -395,16 +419,16 @@ def update_frames():
         # Update displays based on available cameras
         if has_realsense and has_top:
             # Both cameras available - normal display
-            update_display(side_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
-            update_display(top_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            update_display(side_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
+            update_display(top_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
         elif has_realsense and not has_top:
             # Only side camera - display in both panels
-            update_display(side_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
-            update_display(top_panel, frame_side, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            update_display(side_panel, frame_side, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
+            update_display(top_panel, frame_side, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
         elif has_top and not has_realsense:
             # Only top camera - display in both panels
-            update_display(side_panel, frame_top, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
-            update_display(top_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            update_display(side_panel, frame_top, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
+            update_display(top_panel, frame_top, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
         
         time.sleep(0.03)  # ~30 FPS
 
@@ -584,7 +608,7 @@ def detect_object():
         if processed_image is not None and depth_image is not None:
             # Update UI with the images
             # utils.update_display(side_panel, depth_image, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
-            utils.update_display(side_processed_panel, processed_image, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            utils.update_display(side_processed_panel, processed_image, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
             
             # Update status label with measurements
             distance = measurements.get("distance", 0)
@@ -725,7 +749,7 @@ def upload_image(is_top_view=True):
             global frame_top
             frame_top = frame.copy()
             display_frame = resize_with_aspect_ratio(frame, width=TOP_PANEL_WIDTH, height=TOP_PANEL_HEIGHT)
-            update_display(top_panel, display_frame, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+            update_display(top_panel, frame, TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
             
             result = process_frame(
                 frame,
@@ -737,7 +761,7 @@ def upload_image(is_top_view=True):
             
             if result:
                 # Update top view display with visualization
-                update_display(top_processed_panel, result['visualization'], TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT)
+                update_display(top_processed_panel, result['visualization'], TOP_PANEL_WIDTH, TOP_PANEL_HEIGHT, "fit")
                 
                 # Update result display
                 if 'diameter_mm' in result:
@@ -748,7 +772,7 @@ def upload_image(is_top_view=True):
             global frame_side
             frame_side = frame.copy()
             display_frame = resize_with_aspect_ratio(frame, width=SIDE_PANEL_WIDTH, height=SIDE_PANEL_HEIGHT)
-            update_display(side_panel, display_frame, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+            update_display(side_panel, frame, SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
             
             # For uploaded side view images, we don't have depth frame, so pass None
             result = process_frame(
@@ -762,7 +786,7 @@ def upload_image(is_top_view=True):
             
             if result:
                 # Update side view display with visualization
-                update_display(side_processed_panel, result['visualization'], SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT)
+                update_display(side_processed_panel, result['visualization'], SIDE_PANEL_WIDTH, SIDE_PANEL_HEIGHT, "fit")
                 
                 # Update result display
                 if 'height_mm' in result:

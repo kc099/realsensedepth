@@ -29,8 +29,16 @@ def resize_with_aspect_ratio(image, width=None, height=None, inter=cv2.INTER_ARE
     return resized
 
 # UI update utilities
-def update_display(panel, frame, width, height):
-    """Update a panel with an image frame - threaded safe"""
+def update_display(panel, frame, width, height, fill_mode="fit"):
+    """Update a panel with an image frame - threaded safe
+    
+    Args:
+        panel: tkinter panel to update
+        frame: OpenCV image frame
+        width: target width
+        height: target height
+        fill_mode: 'fit' (maintain aspect, add padding) or 'fill' (stretch to fill) or 'crop' (maintain aspect, crop to fill)
+    """
     if frame is None:
         return
     
@@ -39,35 +47,60 @@ def update_display(panel, frame, width, height):
         if len(frame.shape) == 2:  # Grayscale
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         
-        # Calculate target size while maintaining aspect ratio
         frame_h, frame_w = frame.shape[:2]
         
-        # Calculate scale factors for width and height
-        scale_w = width / frame_w
-        scale_h = height / frame_h
-        
-        # Use the smaller scale to ensure the image fits
-        scale = min(scale_w, scale_h)
-        
-        # Calculate new dimensions
-        new_w = int(frame_w * scale)
-        new_h = int(frame_h * scale)
-        
-        # Resize the image
-        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        
-        # Create a canvas with the exact target size (filled with gray)
-        canvas = np.ones((height, width, 3), dtype=np.uint8) * 240  # light gray background
-        
-        # Calculate position to center the image
-        y_offset = (height - new_h) // 2
-        x_offset = (width - new_w) // 2
-        
-        # Place the resized image onto the canvas
-        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        if fill_mode == "fill":
+            # Stretch image to fill entire panel (may distort aspect ratio)
+            resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            final_image = resized
+            
+        elif fill_mode == "crop":
+            # Maintain aspect ratio, crop to fill (no padding)
+            scale_w = width / frame_w
+            scale_h = height / frame_h
+            scale = max(scale_w, scale_h)  # Use larger scale to fill
+            
+            # Calculate new dimensions
+            new_w = int(frame_w * scale)
+            new_h = int(frame_h * scale)
+            
+            # Resize the image
+            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            
+            # Crop to target size
+            y_start = (new_h - height) // 2
+            x_start = (new_w - width) // 2
+            final_image = resized[y_start:y_start+height, x_start:x_start+width]
+            
+        else:  # fill_mode == "fit" (default behavior with smaller padding)
+            # Calculate scale factors for width and height
+            scale_w = width / frame_w
+            scale_h = height / frame_h
+            
+            # Use the smaller scale to ensure the image fits
+            scale = min(scale_w, scale_h)
+            
+            # Calculate new dimensions
+            new_w = int(frame_w * scale)
+            new_h = int(frame_h * scale)
+            
+            # Resize the image
+            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            
+            # Create a canvas with the exact target size (match UI background color)
+            # UI background is #AFE1AF (RGB: 175, 225, 175) - light green
+            canvas = np.full((height, width, 3), [175, 225, 175], dtype=np.uint8)  # Match UI background
+            
+            # Calculate position to center the image
+            y_offset = (height - new_h) // 2
+            x_offset = (width - new_w) // 2
+            
+            # Place the resized image onto the canvas
+            canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+            final_image = canvas
         
         # Convert to PIL format and then to ImageTk
-        image = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(image)
         imgtk = ImageTk.PhotoImage(image=image)
         

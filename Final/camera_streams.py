@@ -173,7 +173,8 @@ class RealSenseCamera(CameraStreamer):
         
         try:
             # Create a config object
-            config = rs.config()  
+            config = rs.config() 
+             
             
             # Try to check if devices are connected first to fail faster
             ctx = rs.context()
