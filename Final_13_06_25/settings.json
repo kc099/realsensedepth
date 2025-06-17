@@ -1,0 +1,56 @@
+{
+    "settings": {
+        "selected_model": "16-19",
+        "auto_capture_interval": 5,
+        "top_camera_url": "http://192.168.100.50:8080/stream-hd",
+        "side_camera_url": "http://192.168.100.51:8080/stream-hd",
+        "com_port": "COM4",
+        "baud_rate": 19200,
+        "modbus_slave_id": 1,
+        "calibration": {
+            "ref_diameter": 466.0,
+            "ref_diameter_pixels": 632.62,
+            "base_height": 1380.0,
+            "side_camera_height": 350.0,
+            "side_ref_pixels": 500.0,
+            "wheel_height": 75.0,
+            "fx": 640.268494,
+            "fy": 640.268494,
+            "cx": 642.991272,
+            "cy": 364.30368,
+            "depth_scale": 0.001,
+            "depth_units": 1000.0,
+            "depth_min": 200.0,
+            "depth_max": 3000.0
+        },
+        "capture_interval": 5
+    },
+    "wheel_models": {
+        "10-13": {
+            "min_dia": 10,
+            "max_dia": 13,
+            "height": 70,
+            "tolerance": 3.0
+        },
+        "13-16": {
+            "min_dia": 13,
+            "max_dia": 16,
+            "height": 75,
+            "tolerance": 3.0
+        },
+        "16-19": {
+            "min_dia": 16,
+            "max_dia": 19,
+            "height": 77,
+            "tolerance": 3.0
+        },
+        "19-22": {
+            "min_dia": 19,
+            "max_dia": 22,
+            "height": 115,
+            "tolerance": 3.0
+        }
+    },
+    "selected_model": "16-19",
+    "last_updated": "14-06-2025 16:29:58"
+}
