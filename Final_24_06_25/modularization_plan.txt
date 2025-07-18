@@ -1,0 +1,58 @@
+# Wheel Measurement System Modularization Plan
+
+## New Module Structure
+
+1. wheel_main.py
+   - Main entry point
+   - GUI setup and tkinter components
+   - Event handling
+
+2. camera_streams.py
+   - RealSense camera streaming
+   - Top camera streaming (event camera)
+   - Side camera streaming (if not RealSense)
+   - Camera initialization and cleanup
+
+3. image_processing.py
+   - Image detection and measurement algorithms
+   - Wheel dimension calculations
+   - Mask generation and processing
+
+4. wheel_measurements.py
+   - Calculation of real-world dimensions
+   - Height/diameter measurements
+   - Wheel classification
+
+5. settings_manager.py
+   - Settings loading/saving
+   - Model parameters
+
+6. utils.py
+   - Shared utility functions
+   - Image manipulation helpers
+   - UI update helpers
+
+7. database.py (already exists)
+   - Database operations
+   
+8. signal_handler.py
+   - 24V signal detection
+   - Signal processing
+
+9. reports_window.py (already exists)
+   - Reporting interface
+   
+10. settings_window.py (already exists)
+    - Settings interface
+
+ ##the file wheel_main.py is an application that can measure dimensions of an object using real sense camera and standard perspective 
+## projection principles. the side camera is realsense and calculates depth and distance between two points on a 
+## detected segment of an object. The top camera should use standard perspective projection. the heigh to the base is 
+## constant and side height is calculated by realsense, the top camera is just an event camera takes RGB image, uses intriscic
+ ## calibrated matrix and depth calculated as base distance - sideheight. and projects points into camera space and calulated 
+##  euclidena distance between center and a point on circumference on detected circle. This must be the calculation logic. 
+##  all of this is triggered upon receving a frame from serial which is named as 24V signal. go through the code and identify
+##   discrepencies with this logic in the implementation. especially want to look at athe computation logic of dimension
+##    calculation of top camera. help me understand the discrepancies 
+
+#my main entry point file is @wheel @wheel_main.py wheel_main.py.... check all the files and let me know which files are not using... which are using multiple times... where i can reduce the repeated checkings/processing of the code which can load/get at the initialization of app and use later until the app is closed without reloading each time the process is called...... i want to reduce the cycle time so where i can reduce ..check the maskingmodel mask rcnn loading and using.. whether it is loading each time the image is processing .... will the print statements effect the cycle time.. 
